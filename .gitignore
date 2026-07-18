@@ -1,0 +1,8 @@
+node_modules/
+.env
+data/
+workspace/*
+!workspace/CLAUDE.md
+bridge.log
+._*
+.DS_Store
