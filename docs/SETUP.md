@@ -34,6 +34,7 @@ ALLOWED_TOOLS=Read,Grep,Glob,WebSearch,WebFetch,Write(./memory/**),Edit(./memory
 NON_OWNER_TOOLS=WebSearch,WebFetch
 CLAUDE_MODEL=
 CLAUDE_TIMEOUT_MS=300000
+CLAUDE_EFFORT=          # 思考深度 low/medium/high/xhigh/max，留空=默认
 ```
 
 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are auto-filled by step 5. Keep `FEISHU_DOMAIN=lark` for international Lark (set `feishu` for the CN edition).
