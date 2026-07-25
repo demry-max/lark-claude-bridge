@@ -34,7 +34,8 @@ ALLOWED_TOOLS=Read,Grep,Glob,WebSearch,WebFetch,Write(./memory/**),Edit(./memory
 NON_OWNER_TOOLS=WebSearch,WebFetch
 CLAUDE_MODEL=
 CLAUDE_TIMEOUT_MS=300000
-CLAUDE_EFFORT=          # 思考深度 low/medium/high/xhigh/max，留空=默认
+CLAUDE_EFFORT=          # thinking effort: low/medium/high/xhigh/max (blank = CLI default)
+FFMPEG_BIN=             # for voice transcription; prefer an absolute path e.g. /opt/homebrew/bin/ffmpeg
 ```
 
 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are auto-filled by step 5. Keep `FEISHU_DOMAIN=lark` for international Lark (set `feishu` for the CN edition).
@@ -69,7 +70,7 @@ cd ~/lark-claude-bridge && npm start
 
 ## Step 7 — Run at startup
 
-**macOS (launchd)** — write `~/Library/LaunchAgents/com.<user>.lark-claude-bridge.plist` from the template [examples/launchd.example.plist](../examples/launchd.example.plist) (absolute node path from `which node`; `PATH` must include the directory containing `claude`), then:
+**macOS (launchd)** — write `~/Library/LaunchAgents/com.<user>.lark-claude-bridge.plist` from the template [examples/launchd.example.plist](../examples/launchd.example.plist) (absolute node path from `which node`; `PATH` must include the directories of both `claude` and `ffmpeg` — launchd does not inherit your shell PATH, and homebrew's ffmpeg lives in `/opt/homebrew/bin`; omitting it makes voice transcription fail silently), then:
 
 ```bash
 launchctl load -w ~/Library/LaunchAgents/com.<user>.lark-claude-bridge.plist   # install & start (stop the step-6 foreground process first)
