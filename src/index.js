@@ -5,6 +5,7 @@ import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR } from './claude.js
 import { buildPrompt } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
 import { startScheduler } from './scheduler.js';
+import { createProgressChannel, flushOutbox, resolveSenderName } from './outbound.js';
 
 const APP_ID = process.env.FEISHU_APP_ID;
 const APP_SECRET = process.env.FEISHU_APP_SECRET;
@@ -24,6 +25,32 @@ const wsClient = new lark.WSClient({
   domain: DOMAIN,
   loggerLevel: lark.LoggerLevel.info,
 });
+
+// ---- 访问控制：留空=保持原行为（全员可私聊）；配置后仅名单内可用 ----
+const parseList = (v) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const ALLOW_USERS = parseList(process.env.ALLOW_USERS); // open_id 白名单
+const ALLOW_CHATS = parseList(process.env.ALLOW_CHATS); // chat_id 白名单（群）
+const OUTBOX_DIR = path.join(WORKSPACE_DIR, 'outbox');
+
+function isAllowed(openId, chatId, isP2p) {
+  if (isP2p) return ALLOW_USERS.length === 0 || ALLOW_USERS.includes(openId);
+  if (ALLOW_CHATS.length && !ALLOW_CHATS.includes(chatId)) return false;
+  return ALLOW_USERS.length === 0 || ALLOW_USERS.includes(openId);
+}
+
+const HELP_TEXT = [
+  '**可用指令**',
+  '- `/new` 开启全新会话（忘掉此前上下文）',
+  '- `/status` 查看会话、模型、思考深度、可用工具',
+  '- `/help` 显示本说明',
+  '',
+  '**能做什么**',
+  '- 直接对话；群里 @我 即可',
+  '- 发图片 / 文件 / 语音，我会读内容后回答',
+  '- 说「记住…」我会写进长期记忆，跨会话生效',
+  '- 说「存成技能」我会把流程固化下来，以后自动遵循',
+  '- 说「每天八点提醒我…」我会自己排定时任务',
+].join('\n');
 
 // ---- 消息去重（飞书事件可能重投） ----
 const seen = new Set();
@@ -114,6 +141,11 @@ async function handleMessage(data) {
     if (!mentioned) return;
   }
 
+  if (!isAllowed(senderOpenId, message.chat_id, message.chat_type === 'p2p')) {
+    console.log(`[deny] ${senderOpenId} @ ${message.chat_id} 不在白名单`);
+    return;
+  }
+
   // ---- owner：首个私聊者自动认领，owner 享有本机工具，其他人仅联网工具 ----
   let owner = loadOwner();
   if (!owner && message.chat_type === 'p2p') {
@@ -157,18 +189,33 @@ async function handleMessage(data) {
     await reply(message.message_id, sessionInfo(message.chat_id, isOwner));
     return;
   }
+  if (text === '/help' || text === '帮助') {
+    await reply(message.message_id, HELP_TEXT);
+    return;
+  }
 
   // 附件存放于 workspace/incoming/，即使非 owner 也放行该目录的只读访问
   const extraTools = built.attachments.length ? ['Read(./incoming/**)'] : [];
 
+  // 群聊带上发言人姓名，机器人才知道是谁在说话
+  let prompt = text;
+  if (message.chat_type !== 'p2p') {
+    const name = await resolveSenderName(client, senderOpenId);
+    if (name) prompt = `[群成员 ${name}]：${text}`;
+  }
+
   enqueue(message.chat_id, async () => {
     console.log(`[msg] ${isOwner ? 'owner' : senderOpenId} @ ${message.chat_type} [${message.message_type}]: ${text.slice(0, 80)}`);
     await react(message.message_id, 'OnIt');
+    const progress = createProgressChannel(client, message.message_id);
     try {
-      const answer = await runClaude(message.chat_id, text, isOwner, extraTools, (progress) =>
-        reply(message.message_id, `⏳ ${progress}`)
-      );
+      const answer = await runClaude(message.chat_id, prompt, isOwner, extraTools, progress.update);
+      await progress.finish();
       await reply(message.message_id, answer || '（Claude 返回了空回复）');
+      // 机器人写进 outbox 的图片/文件随本轮一起回传
+      await flushOutbox(client, OUTBOX_DIR, (data) =>
+        client.im.v1.message.reply({ path: { message_id: message.message_id }, data })
+      );
       await react(message.message_id, 'DONE');
     } catch (e) {
       console.error('[claude]', e);

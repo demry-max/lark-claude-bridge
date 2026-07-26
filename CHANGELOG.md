@@ -2,6 +2,28 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-07-26
+
+Capability parity pass against OpenClaw's Lark extension.
+
+### Added
+- **Lark Docs / Bitable read & write**: a built-in MCP tool server (`src/mcp-feishu.js`) exposing 7 actions —
+  read a document, append paragraphs, list tables, list fields, read records, create a record, update a record.
+  Uses the **bot app's own tenant credentials**, so reach is governed precisely by the scopes you enable;
+  **owner-only**. Users can paste a Lark link (`/docx/`, `/base/`, `/wiki/`) directly.
+- **Send images and files back**: anything written into `workspace/outbox/` is uploaded and sent after the turn,
+  then cleared. Images go out as image messages with inline preview.
+- **In-place progress card**: intermediate steps now update a single card instead of posting a new message each
+  time, and collapse to one line when finished.
+- **Access control**: `ALLOW_USERS` / `ALLOW_CHATS` allowlists; empty keeps the previous unrestricted behaviour.
+- **Sender name resolution**: group messages carry the sender's name so the bot knows who is speaking
+  (silently degrades without contact scope).
+- **`/help`**: lists commands and capabilities.
+
+### New scopes required
+Enable and publish as needed: `docx:document:readonly`, `docx:document`, `bitable:app:readonly`, `bitable:app`,
+`wiki:wiki:readonly`, `contact:user.base:readonly`.
+
 ## [1.1.0] - 2026-07-26
 
 Everything added since the initial public release (1.0.0).

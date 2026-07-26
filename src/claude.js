@@ -18,6 +18,8 @@ const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 300_000);
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 // 思考深度：low/medium/high/xhigh/max，留空=CLI 默认
 const CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
+// 飞书文档/多维表格工具开关（默认开；仅 owner 生效，权限由飞书后台 scope 决定）
+const FEISHU_TOOLS = process.env.FEISHU_TOOLS !== 'false';
 
 const sessions = loadSessions(); // { [chatId]: sessionId }
 
@@ -89,12 +91,33 @@ export function runClaude(chatId, prompt, isOwner = false, extraTools = [], onPr
   // 提示词走 stdin：--allowedTools 等可变参数选项会吞掉后置的位置参数
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (sessions[chatId]) args.push('--resume', sessions[chatId]);
-  const tools = [isOwner ? ALLOWED_TOOLS : NON_OWNER_TOOLS, ...extraTools]
+  const tools = [
+    isOwner ? ALLOWED_TOOLS : NON_OWNER_TOOLS,
+    ...extraTools,
+    isOwner && FEISHU_TOOLS ? 'mcp__feishu' : '',
+  ]
     .filter(Boolean)
     .join(',');
   if (tools) args.push('--allowedTools', tools);
   if (CLAUDE_MODEL) args.push('--model', CLAUDE_MODEL);
   if (CLAUDE_EFFORT) args.push('--effort', CLAUDE_EFFORT);
+  // 飞书文档/多维表格工具：只用应用自己的租户凭据，且仅 owner 可用
+  if (isOwner && FEISHU_TOOLS) {
+    args.push('--mcp-config', JSON.stringify({
+      mcpServers: {
+        feishu: {
+          type: 'stdio',
+          command: process.execPath,
+          args: [path.join(__dirname, 'mcp-feishu.js')],
+          env: {
+            FEISHU_APP_ID: process.env.FEISHU_APP_ID ?? '',
+            FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET ?? '',
+            FEISHU_DOMAIN: process.env.FEISHU_DOMAIN ?? '',
+          },
+        },
+      },
+    }));
+  }
 
   return new Promise((resolve, reject) => {
     const child = spawn(CLAUDE_BIN, args, {
