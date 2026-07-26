@@ -1,6 +1,6 @@
 # lark-claude-bridge
 
-[![version](https://img.shields.io/badge/version-1.2.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![version](https://img.shields.io/badge/version-1.3.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Chat with Claude Code from Lark** — DM the bot or @mention it in a group chat, and Claude answers with full context continuity: it reads images, files, and voice messages, and remembers across days and weeks. **No public server, domain, or callback URL required** — events arrive over Lark's persistent WebSocket connection, so it runs on any machine with Claude Code installed.
 
@@ -14,6 +14,10 @@ Sister projects: [feishu-claude-bridge](https://github.com/demry-max/feishu-clau
 - 📲 **App created by scanning a QR code**: `npm run register` uses Lark's official app-registration OAuth flow — one scan auto-creates the app, writes credentials to `.env`, and registers you as owner
 - 🧠 **Session memory**: each Lark chat maps to one Claude session (`--resume`), valid across days; `/new` to reset, `/status` to inspect
 - ⏰ **Scheduled tasks (the bot schedules itself)**: say "remind me every weekday at 8" and it writes a job definition into `workspace/schedules/`; the bridge fires it on time and pushes the result proactively. Supports cron expressions and one-shot times. **The bot never gets Bash/shell access** — it only writes job definitions in a whitelisted directory; execution stays with the bridge
+- ⏱️ **Activity-based timeout & task control**: the clock only runs while output stalls; `/cancel` anytime, `/redirect` to change course mid-task
+- 🛡️ **Outbound redaction**: keys, tokens, JWTs and private IPs stripped before sending
+- 🔊 **Voice replies**: `/voice` adds a spoken version of each answer
+- 🩺 **Scheduled-task self-diagnosis**: failures are analysed automatically with a recommended action
 - 📄 **Lark Docs / Bitable read & write**: built-in MCP tools (read a doc, append paragraphs, list tables/fields, read and write Bitable records) using the **bot app's own tenant permissions** — what it can touch is governed by the scopes you enable; owner-only
 - 🖼️ **Send images and files back**: anything the bot writes into `workspace/outbox/` is uploaded and sent automatically (images preview inline)
 - 🎫 **In-place progress card**: long-running steps update a single card instead of spamming messages, then collapse when done

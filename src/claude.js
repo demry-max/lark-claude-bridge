@@ -14,7 +14,10 @@ const ALLOWED_TOOLS =
   process.env.ALLOWED_TOOLS ?? 'Read,Grep,Glob,WebSearch,WebFetch';
 // 非 owner（同事/群成员）不给本机文件工具，只允许联网检索
 const NON_OWNER_TOOLS = process.env.NON_OWNER_TOOLS ?? 'WebSearch,WebFetch';
-const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 300_000);
+// 空闲超时：只要 Claude 还在输出就不计时；静默超过该时长才判定卡死
+const CLAUDE_IDLE_TIMEOUT_MS = Number(process.env.CLAUDE_IDLE_TIMEOUT_MS || 600_000);
+// 绝对上限：无论多活跃，超过该时长也终止（兜底防失控）
+const CLAUDE_MAX_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 3_600_000);
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 // 思考深度：low/medium/high/xhigh/max，留空=CLI 默认
 const CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
@@ -22,6 +25,23 @@ const CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
 const FEISHU_TOOLS = process.env.FEISHU_TOOLS !== 'false';
 
 const sessions = loadSessions(); // { [chatId]: sessionId }
+
+// 运行中的 claude 子进程：chatId → child，供 /cancel 终止
+const running = new Map();
+export function isRunning(chatId) {
+  return running.has(chatId);
+}
+export function cancelRun(chatId) {
+  const child = running.get(chatId);
+  if (!child) return false;
+  child.__cancelled = true;
+  try {
+    child.kill('SIGTERM');
+    setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000);
+  } catch { /* 已退出 */ }
+  running.delete(chatId);
+  return true;
+}
 
 export function resetSession(chatId) {
   delete sessions[chatId];
@@ -124,17 +144,29 @@ export function runClaude(chatId, prompt, isOwner = false, extraTools = [], onPr
       cwd: WORKSPACE_DIR,
       env: process.env,
     });
+    running.set(chatId, child);
     let stderr = '';
     let pending = ''; // 暂存的 assistant 文本（可能是中间进度，也可能是最终答案）
     let finalText = null;
     let finalErr = null;
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`claude CLI 超时（${CLAUDE_TIMEOUT_MS / 1000}s）`));
-    }, CLAUDE_TIMEOUT_MS);
+    let timedOut = null;
+    let lastActivity = Date.now();
+    const startedAt = Date.now();
+    // 活动式超时：有输出就续命，静默过久或总时长超上限才终止
+    const timer = setInterval(() => {
+      const idle = Date.now() - lastActivity;
+      const total = Date.now() - startedAt;
+      if (idle > CLAUDE_IDLE_TIMEOUT_MS) timedOut = `静默 ${Math.round(idle / 60000)} 分钟无输出`;
+      else if (total > CLAUDE_MAX_MS) timedOut = `总时长超过 ${Math.round(CLAUDE_MAX_MS / 60000)} 分钟上限`;
+      if (timedOut) {
+        clearInterval(timer);
+        try { child.kill('SIGKILL'); } catch {}
+      }
+    }, 15_000);
 
     const rl = readline.createInterface({ input: child.stdout });
     rl.on('line', (line) => {
+      lastActivity = Date.now(); // 有输出即续命
       if (!line.trim()) return;
       let d;
       try {
@@ -169,13 +201,21 @@ export function runClaude(chatId, prompt, isOwner = false, extraTools = [], onPr
       }
     });
 
-    child.stderr.on('data', (d) => (stderr += d));
+    child.stderr.on('data', (d) => { stderr += d; lastActivity = Date.now(); });
     child.on('error', (e) => {
-      clearTimeout(timer);
+      clearInterval(timer);
+      running.delete(chatId);
       reject(new Error(`claude CLI 启动失败: ${e.message}`));
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      clearInterval(timer);
+      running.delete(chatId);
+      if (child.__cancelled) {
+        const err = new Error('CANCELLED');
+        err.cancelled = true;
+        return reject(err);
+      }
+      if (timedOut) return reject(new Error(`claude CLI 超时（${timedOut}）`));
       if (finalErr) return reject(finalErr);
       if (finalText !== null) return resolve(finalText);
       if (pending) return resolve(pending); // 异常缺失 result 时兜底

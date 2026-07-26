@@ -2,6 +2,29 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-07-26
+
+Capabilities learned from similar GitHub projects (ofoxai/lark-claude-bot, Kirafy123/feishu-claude-bot, yangwhale/CloseCrab).
+
+### Added
+- **Activity-based timeout**: the clock only runs while Claude is silent — a task is killed after
+  `CLAUDE_IDLE_TIMEOUT_MS` (default 10 min) of no output, with `CLAUDE_TIMEOUT_MS` (default 60 min) as a hard cap.
+  Previously a flat 5-minute timeout killed legitimate long tasks.
+- **`/cancel`**: abort the running task and unblock the chat queue.
+- **`/redirect <new instruction>`**: interrupt the current task and restart with new instructions, context preserved.
+- **Busy notice**: messages arriving mid-task now suggest `/cancel` or `/redirect` instead of silently queueing.
+- **Outbound redaction**: API keys, tokens, JWTs, `Bearer`/`password` literals and private IPs are stripped from
+  every outgoing message; runtime credentials (App Secret, etc.) are filtered too.
+- **Structured progress**: the progress card marks each step ✅/🔄 and turns fully ✅ on completion.
+- **Scheduled-task self-diagnosis**: a failed job triggers a diagnostic pass (failure class, root cause,
+  recommended action) delivered alongside the error.
+- **`/voice`**: replies additionally come as a voice message (macOS `say` + ffmpeg/libopus).
+- **Sheets tools**: MCP gains `sheet_read` / `sheet_write` (9 tools total).
+
+### Note
+- Mail tools were not added: the enterprise mailbox API requires user-level authorization, which conflicts with
+  this project's "app tenant credentials only" security model.
+
 ## [1.2.0] - 2026-07-26
 
 Capability parity pass against OpenClaw's Lark extension.

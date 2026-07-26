@@ -216,5 +216,53 @@ server.tool(
   }
 );
 
+// ---------- 电子表格 ----------
+server.tool(
+  'sheet_read',
+  '读取飞书电子表格的单元格区域。range 形如 "工作表ID!A1:D20"；不传 range 时读取首个工作表前 100 行。',
+  { url: z.string().describe('电子表格 URL 或 spreadsheet_token'), range: z.string().optional() },
+  async ({ url, range }) => {
+    try {
+      let { type, token } = parseTarget(url);
+      if (type === 'wiki') ({ objToken: token } = await resolveWiki(token));
+      let target = range;
+      if (!target) {
+        const meta = await client.sheets.v3.spreadsheetSheet.query({ path: { spreadsheet_token: token } });
+        const first = (meta?.data?.sheets ?? meta?.sheets ?? [])[0];
+        if (!first) throw new Error('该表格没有工作表');
+        target = `${first.sheet_id}!A1:Z100`;
+      }
+      const res = await client.request({
+        method: 'GET',
+        url: `/open-apis/sheets/v2/spreadsheets/${token}/values/${encodeURIComponent(target)}`,
+      });
+      const vr = res?.data?.valueRange ?? res?.valueRange ?? {};
+      return ok({ range: vr.range, values: vr.values ?? [] });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.tool(
+  'sheet_write',
+  '写入飞书电子表格的单元格区域（覆盖写）。values 为二维数组，如 [["姓名","金额"],["张三",100]]。',
+  { url: z.string(), range: z.string().describe('形如 "工作表ID!A1:B2"'), values: z.array(z.array(z.any())) },
+  async ({ url, range, values }) => {
+    try {
+      let { type, token } = parseTarget(url);
+      if (type === 'wiki') ({ objToken: token } = await resolveWiki(token));
+      const res = await client.request({
+        method: 'PUT',
+        url: `/open-apis/sheets/v2/spreadsheets/${token}/values`,
+        data: { valueRange: { range, values } },
+      });
+      return ok({ updated: res?.data?.updatedCells ?? res?.updatedCells ?? null, range });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
 await server.connect(new StdioServerTransport());
 console.error('mcp-feishu: ready');

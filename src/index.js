@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import * as lark from '@larksuiteoapi/node-sdk';
 import path from 'node:path';
-import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR } from './claude.js';
+import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR, cancelRun, isRunning } from './claude.js';
 import { buildPrompt } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
 import { startScheduler } from './scheduler.js';
-import { createProgressChannel, flushOutbox, resolveSenderName } from './outbound.js';
+import { createProgressChannel, flushOutbox, resolveSenderName, redact, sendVoice } from './outbound.js';
 
 const APP_ID = process.env.FEISHU_APP_ID;
 const APP_SECRET = process.env.FEISHU_APP_SECRET;
@@ -31,6 +31,7 @@ const parseList = (v) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolea
 const ALLOW_USERS = parseList(process.env.ALLOW_USERS); // open_id 白名单
 const ALLOW_CHATS = parseList(process.env.ALLOW_CHATS); // chat_id 白名单（群）
 const OUTBOX_DIR = path.join(WORKSPACE_DIR, 'outbox');
+const voiceChats = new Set(); // 开启语音回复的会话
 
 function isAllowed(openId, chatId, isP2p) {
   if (isP2p) return ALLOW_USERS.length === 0 || ALLOW_USERS.includes(openId);
@@ -43,6 +44,9 @@ const HELP_TEXT = [
   '- `/new` 开启全新会话（忘掉此前上下文）',
   '- `/status` 查看会话、模型、思考深度、可用工具',
   '- `/help` 显示本说明',
+  '- `/cancel` 取消正在跑的任务',
+  '- `/redirect <新要求>` 中断当前任务并按新要求重来',
+  '- `/voice` 切换语音回复（回答附带一条语音）',
   '',
   '**能做什么**',
   '- 直接对话；群里 @我 即可',
@@ -76,8 +80,9 @@ function enqueue(chatId, task) {
 }
 
 async function reply(messageId, text) {
+  const safe = redact(text);
   const chunks = [];
-  for (let i = 0; i < text.length; i += 20000) chunks.push(text.slice(i, i + 20000));
+  for (let i = 0; i < safe.length; i += 20000) chunks.push(safe.slice(i, i + 20000));
   for (const chunk of chunks) {
     try {
       await client.im.v1.message.reply({
@@ -193,12 +198,37 @@ async function handleMessage(data) {
     await reply(message.message_id, HELP_TEXT);
     return;
   }
+  if (text === '/cancel' || text === '取消') {
+    const killed = cancelRun(message.chat_id);
+    await reply(message.message_id, killed ? '🛑 已取消当前任务。' : '当前没有正在运行的任务。');
+    return;
+  }
+  if (text === '/voice' || text === '/voice on' || text === '/voice off') {
+    const on = text !== '/voice off' && !voiceChats.has(message.chat_id);
+    if (on) voiceChats.add(message.chat_id); else voiceChats.delete(message.chat_id);
+    await reply(message.message_id, on ? '🔊 已开启语音回复（回答会附一条语音）。再发 /voice 关闭。' : '🔇 已关闭语音回复。');
+    return;
+  }
+  // 任务进行中收到新指令：提示可取消/重定向
+  if (isRunning(message.chat_id) && !text.startsWith('/redirect')) {
+    await reply(message.message_id, '⏳ 上一个任务还在跑。发 **/cancel** 取消，或 **/redirect 你的新要求** 取消并按新要求重来（会话上下文保留）。');
+    return;
+  }
+  if (text.startsWith('/redirect')) {
+    const extra = text.replace(/^\/redirect\s*/, '').trim();
+    if (!extra) {
+      await reply(message.message_id, '用法：/redirect 你的新要求');
+      return;
+    }
+    cancelRun(message.chat_id);
+    prompt = extra; // 会话通过 --resume 保留，直接以新要求继续
+  }
 
   // 附件存放于 workspace/incoming/，即使非 owner 也放行该目录的只读访问
   const extraTools = built.attachments.length ? ['Read(./incoming/**)'] : [];
+  let prompt = text;
 
   // 群聊带上发言人姓名，机器人才知道是谁在说话
-  let prompt = text;
   if (message.chat_type !== 'p2p') {
     const name = await resolveSenderName(client, senderOpenId);
     if (name) prompt = `[群成员 ${name}]：${text}`;
@@ -216,8 +246,14 @@ async function handleMessage(data) {
       await flushOutbox(client, OUTBOX_DIR, (data) =>
         client.im.v1.message.reply({ path: { message_id: message.message_id }, data })
       );
+      if (voiceChats.has(message.chat_id) && answer) {
+        await sendVoice(client, answer, (data) =>
+          client.im.v1.message.reply({ path: { message_id: message.message_id }, data })
+        );
+      }
       await react(message.message_id, 'DONE');
     } catch (e) {
+      if (e?.cancelled) return; // /cancel 主动终止，不报错
       console.error('[claude]', e);
       const msg = String(e.message ?? e);
       if (msg.includes('401') || /re-?authenticate/i.test(msg)) {
@@ -240,7 +276,7 @@ const eventDispatcher = new lark.EventDispatcher({}).register({
 async function sendToChat(chatId, text) {
   const body = (data) =>
     client.im.v1.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, ...data } });
-  const chunk = text.slice(0, 20000);
+  const chunk = redact(text).slice(0, 20000);
   try {
     await body({
       msg_type: 'interactive',
@@ -265,10 +301,37 @@ startScheduler({
       return;
     }
     // 定时任务用独立会话上下文，避免污染用户正在进行的对话
-    const answer = await runClaude(`sched:${job._file}`, job.prompt, true, [], (p) =>
-      sendToChat(chatId, `⏳ ${p}`)
-    );
-    await sendToChat(chatId, `⏰ **${job.name ?? '定时任务'}**\n\n${answer || '（无输出）'}`);
+    try {
+      const answer = await runClaude(`sched:${job._file}`, job.prompt, true, [], (p) =>
+        sendToChat(chatId, `⏳ ${p}`)
+      );
+      await sendToChat(chatId, `⏰ **${job.name ?? '定时任务'}**\n\n${answer || '（无输出）'}`);
+    } catch (e) {
+      // 失败自诊断：让 Claude 判断是什么原因、能否自行修复
+      const err = String(e?.message ?? e).slice(0, 800);
+      console.error(`[sched] 任务失败，启动自诊断: ${err}`);
+      let diag = '';
+      try {
+        diag = await runClaude(
+          `sched-diag:${job._file}`,
+          [
+            '你是定时任务的诊断助手。以下任务执行失败，请判断原因并给出结论。',
+            `任务名：${job.name ?? job._file}`,
+            `任务指令：${job.prompt}`,
+            `报错：${err}`,
+            '',
+            '请用三行回答：1) 失败类别（权限/网络/额度/任务本身写错/其他）；2) 根因判断；3) 建议动作（能自行修复就说明怎么改任务定义，需要人工就明确说要做什么）。不要重试该任务。',
+          ].join('\n'),
+          true
+        );
+      } catch (e2) {
+        diag = `（诊断也失败了：${String(e2?.message ?? e2).slice(0, 200)}）`;
+      }
+      await sendToChat(
+        chatId,
+        `⚠️ **定时任务失败**：${job.name ?? job._file}\n\n报错：\`${err.slice(0, 300)}\`\n\n**自诊断**\n${diag}`
+      );
+    }
   },
 });
 
