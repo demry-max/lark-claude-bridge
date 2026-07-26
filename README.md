@@ -1,5 +1,7 @@
 # lark-claude-bridge
 
+[![version](https://img.shields.io/badge/version-1.1.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **Chat with Claude Code from Lark** — DM the bot or @mention it in a group chat, and Claude answers with full context continuity: it reads images, files, and voice messages, and remembers across days and weeks. **No public server, domain, or callback URL required** — events arrive over Lark's persistent WebSocket connection, so it runs on any machine with Claude Code installed.
 
 > 中国区飞书用户请使用姊妹仓库 [feishu-claude-bridge](https://github.com/demry-max/feishu-claude-bridge)（中文文档）。Same codebase — this repo defaults to the international Lark domain (`open.larksuite.com`).
