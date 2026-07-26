@@ -1,8 +1,10 @@
 import 'dotenv/config';
 import * as lark from '@larksuiteoapi/node-sdk';
+import path from 'node:path';
 import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR } from './claude.js';
 import { buildPrompt } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
+import { startScheduler } from './scheduler.js';
 
 const APP_ID = process.env.FEISHU_APP_ID;
 const APP_SECRET = process.env.FEISHU_APP_SECRET;
@@ -163,7 +165,9 @@ async function handleMessage(data) {
     console.log(`[msg] ${isOwner ? 'owner' : senderOpenId} @ ${message.chat_type} [${message.message_type}]: ${text.slice(0, 80)}`);
     await react(message.message_id, 'OnIt');
     try {
-      const answer = await runClaude(message.chat_id, text, isOwner, extraTools);
+      const answer = await runClaude(message.chat_id, text, isOwner, extraTools, (progress) =>
+        reply(message.message_id, `⏳ ${progress}`)
+      );
       await reply(message.message_id, answer || '（Claude 返回了空回复）');
       await react(message.message_id, 'DONE');
     } catch (e) {
@@ -183,6 +187,42 @@ async function handleMessage(data) {
 
 const eventDispatcher = new lark.EventDispatcher({}).register({
   'im.message.receive_v1': handleMessage,
+});
+
+// ---- 定时任务：到点跑 Claude，把结果主动发到指定会话 ----
+async function sendToChat(chatId, text) {
+  const body = (data) =>
+    client.im.v1.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, ...data } });
+  const chunk = text.slice(0, 20000);
+  try {
+    await body({
+      msg_type: 'interactive',
+      content: JSON.stringify({
+        config: { wide_screen_mode: true },
+        elements: [{ tag: 'markdown', content: chunk }],
+      }),
+    });
+  } catch (e) {
+    console.error('[sched] 卡片发送失败，降级纯文本:', e?.message ?? e);
+    await body({ msg_type: 'text', content: JSON.stringify({ text: chunk }) });
+  }
+}
+
+startScheduler({
+  schedulesDir: path.join(WORKSPACE_DIR, 'schedules'),
+  stateFile: path.join(WORKSPACE_DIR, '..', 'data', 'schedule-state.json'),
+  onFire: async (job) => {
+    const chatId = job.chat_id;
+    if (!chatId) {
+      console.error(`[sched] 任务「${job.name ?? job._file}」缺 chat_id，跳过`);
+      return;
+    }
+    // 定时任务用独立会话上下文，避免污染用户正在进行的对话
+    const answer = await runClaude(`sched:${job._file}`, job.prompt, true, [], (p) =>
+      sendToChat(chatId, `⏳ ${p}`)
+    );
+    await sendToChat(chatId, `⏰ **${job.name ?? '定时任务'}**\n\n${answer || '（无输出）'}`);
+  },
 });
 
 console.log('启动飞书长连接…');

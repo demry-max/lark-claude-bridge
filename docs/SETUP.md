@@ -30,7 +30,7 @@ FEISHU_DOMAIN=lark
 FEISHU_APP_ID=
 FEISHU_APP_SECRET=
 
-ALLOWED_TOOLS=Read,Grep,Glob,WebSearch,WebFetch,Write(./memory/**),Edit(./memory/**),Write(./skills/**),Edit(./skills/**)
+ALLOWED_TOOLS=Read,Grep,Glob,WebSearch,WebFetch,Write(./memory/**),Edit(./memory/**),Write(./skills/**),Edit(./skills/**),Write(./schedules/**),Edit(./schedules/**)
 NON_OWNER_TOOLS=WebSearch,WebFetch
 CLAUDE_MODEL=
 CLAUDE_TIMEOUT_MS=300000
@@ -97,3 +97,5 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\install-startup.ps1
 | Image/voice permission errors | Open the missing scopes in the developer console (see README manual-setup JSON) and publish a new version |
 | Machine off/asleep | The bot is offline (physical limitation); for 24×7, deploy on an always-on host |
 | Safety | Never commit or share `.env`; never grant Write/Bash to an unattended bot; never use `--dangerously-skip-permissions` |
+
+> **Scheduled tasks**: copy `src/scheduler.js` from this repo as well, wired at the end of `src/index.js`. The bot writes job definitions into `workspace/schedules/*.json`; the bridge executes them on time — **never grant the bot Bash access**.
