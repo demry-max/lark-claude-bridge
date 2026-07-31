@@ -2,6 +2,15 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-07-31
+
+### Fixed
+- **Stale upgrade config silently killed long tasks**: v1.3.0 changed `CLAUDE_TIMEOUT_MS` from a hard timeout to an
+  absolute cap, but the `300000` (5 min) commonly left in older `.env` files made the cap shorter than the idle
+  timeout, so long tasks were always killed. Startup now self-checks: if the absolute cap is below the idle timeout,
+  it logs a clear warning and raises it automatically.
+  **Upgrade note**: set `CLAUDE_TIMEOUT_MS=3600000` and add `CLAUDE_IDLE_TIMEOUT_MS=600000` in `.env`.
+
 ## [1.3.0] - 2026-07-26
 
 Capabilities learned from similar GitHub projects (ofoxai/lark-claude-bot, Kirafy123/feishu-claude-bot, yangwhale/CloseCrab).

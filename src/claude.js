@@ -17,7 +17,17 @@ const NON_OWNER_TOOLS = process.env.NON_OWNER_TOOLS ?? 'WebSearch,WebFetch';
 // 空闲超时：只要 Claude 还在输出就不计时；静默超过该时长才判定卡死
 const CLAUDE_IDLE_TIMEOUT_MS = Number(process.env.CLAUDE_IDLE_TIMEOUT_MS || 600_000);
 // 绝对上限：无论多活跃，超过该时长也终止（兜底防失控）
-const CLAUDE_MAX_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 3_600_000);
+// 注意：v1.3.0 起 CLAUDE_TIMEOUT_MS 的语义从「硬超时」改为「绝对上限」。
+// 老配置里常见的 300000（5 分钟）会让长任务必然被杀，这里自动纠正并告警。
+let CLAUDE_MAX_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 3_600_000);
+if (CLAUDE_MAX_MS < CLAUDE_IDLE_TIMEOUT_MS) {
+  console.error(
+    `[config] CLAUDE_TIMEOUT_MS=${CLAUDE_MAX_MS}ms 小于空闲超时 ${CLAUDE_IDLE_TIMEOUT_MS}ms，` +
+      `这是 v1.3.0 之前的旧语义残留，长任务会被误杀；已自动提升为 ${CLAUDE_IDLE_TIMEOUT_MS * 6}ms。` +
+      `请在 .env 中改为 3600000 以消除此警告。`
+  );
+  CLAUDE_MAX_MS = CLAUDE_IDLE_TIMEOUT_MS * 6;
+}
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 // 思考深度：low/medium/high/xhigh/max，留空=CLI 默认
 const CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
