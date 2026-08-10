@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import * as lark from '@larksuiteoapi/node-sdk';
 import path from 'node:path';
-import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR, cancelRun, isRunning } from './claude.js';
+import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR, cancelRun, isRunning, getRuntimeConfig, setRuntimeConfig, MODEL_ALIASES, EFFORT_LEVELS } from './claude.js';
 import { buildPrompt } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
 import { startScheduler } from './scheduler.js';
@@ -47,6 +47,7 @@ const HELP_TEXT = [
   '- `/cancel` 取消正在跑的任务',
   '- `/redirect <新要求>` 中断当前任务并按新要求重来',
   '- `/voice` 切换语音回复（回答附带一条语音）',
+  '- `/model [模型] [思考档]` 查看或切换模型，如 `/model fable high`（仅 owner）',
   '',
   '**能做什么**',
   '- 直接对话；群里 @我 即可',
@@ -198,6 +199,42 @@ async function handleMessage(data) {
     await reply(message.message_id, HELP_TEXT);
     return;
   }
+  if (text === '/model' || text.startsWith('/model ')) {
+    if (!isOwner) {
+      await reply(message.message_id, '只有 owner 可以切换模型。');
+      return;
+    }
+    const args = text.slice('/model'.length).trim().split(/\s+/).filter(Boolean);
+    const cur = getRuntimeConfig();
+    if (!args.length) {
+      await reply(
+        message.message_id,
+        [
+          `**当前模型**：\`${cur.model || '（CLI 默认）'}\``,
+          `**思考深度**：\`${cur.effort || '（CLI 默认）'}\``,
+          '',
+          `用法：\`/model <模型> [思考档]\`，例如 \`/model fable high\``,
+          `可用简称：${Object.keys(MODEL_ALIASES).join(' / ')}（也可写完整模型名）`,
+          `思考档：${EFFORT_LEVELS.join(' / ')}`,
+        ].join('\n')
+      );
+      return;
+    }
+    try {
+      // 第一个参数若是思考档，则只改档位
+      const first = args[0].toLowerCase();
+      const next = EFFORT_LEVELS.includes(first)
+        ? setRuntimeConfig({ effort: first })
+        : setRuntimeConfig({ model: args[0], effort: args[1] });
+      await reply(
+        message.message_id,
+        `✅ 已切换：模型 \`${next.model || 'CLI 默认'}\`，思考深度 \`${next.effort || 'CLI 默认'}\`\n下一条消息即生效（无需重启）。`
+      );
+    } catch (e) {
+      await reply(message.message_id, `⚠️ ${e?.message ?? e}`);
+    }
+    return;
+  }
   if (text === '/cancel' || text === '取消') {
     const killed = cancelRun(message.chat_id);
     await reply(message.message_id, killed ? '🛑 已取消当前任务。' : '当前没有正在运行的任务。');
@@ -296,6 +333,20 @@ startScheduler({
   stateFile: path.join(WORKSPACE_DIR, '..', 'data', 'schedule-state.json'),
   onFire: async (job) => {
     const chatId = job.chat_id;
+    // 动作型任务：切换模型/思考档，不走 Claude 调用
+    if (job.action === 'set-model') {
+      try {
+        const next = setRuntimeConfig({ model: job.model, effort: job.effort });
+        console.log(`[sched] 已切换模型 → ${next.model} / ${next.effort}`);
+        if (chatId) {
+          await sendToChat(chatId, `🔀 **${job.name ?? '定时切换'}**：模型 \`${next.model || 'CLI 默认'}\`，思考深度 \`${next.effort || 'CLI 默认'}\``);
+        }
+      } catch (e) {
+        console.error('[sched] 切换模型失败:', e?.message ?? e);
+        if (chatId) await sendToChat(chatId, `⚠️ 定时切换模型失败：${e?.message ?? e}`);
+      }
+      return;
+    }
     if (!chatId) {
       console.error(`[sched] 任务「${job.name ?? job._file}」缺 chat_id，跳过`);
       return;

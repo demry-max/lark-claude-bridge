@@ -2,6 +2,22 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-08-10
+
+### Added
+- **`/model` command**: inspect or switch model and thinking effort from chat — `/model fable high`,
+  `/model opus xhigh`, or `/model high` (effort only). **Takes effect immediately, no restart**, and is written
+  back to `.env` so it survives restarts. Owner-only, with whitelist validation for both values.
+- **Scheduled model switching**: jobs now support `"action": "set-model"` with `model` / `effort` fields, so you
+  can drop to a cheaper tier on a cron or at a one-off time.
+
+### Fixed
+- **Model config previously required a restart**: `CLAUDE_MODEL` / `CLAUDE_EFFORT` moved from load-time constants
+  to runtime variables.
+- **Dropped the external scheduling script**: switching config via a macOS launchd shell script fails silently on
+  external (exFAT) volumes — the system blocks it at the TCC layer with `Operation not permitted`. The bridge's own
+  scheduler now performs the switch, with no launchd dependency.
+
 ## [1.3.1] - 2026-07-31
 
 ### Fixed

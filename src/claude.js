@@ -28,9 +28,64 @@ if (CLAUDE_MAX_MS < CLAUDE_IDLE_TIMEOUT_MS) {
   );
   CLAUDE_MAX_MS = CLAUDE_IDLE_TIMEOUT_MS * 6;
 }
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
+let CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 // 思考深度：low/medium/high/xhigh/max，留空=CLI 默认
-const CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
+let CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
+
+// 模型短名 → 全名（也允许直接写全名）
+export const MODEL_ALIASES = {
+  fable: 'claude-fable-5',
+  opus: 'claude-opus-5',
+  sonnet: 'claude-sonnet-5',
+  haiku: 'claude-haiku-4-5-20251001',
+};
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+export function getRuntimeConfig() {
+  return { model: CLAUDE_MODEL, effort: CLAUDE_EFFORT };
+}
+
+// 只改 .env 里的这两行，其余内容与注释原样保留
+function patchEnvFile(updates) {
+  const envPath = path.resolve(__dirname, '..', '.env');
+  try {
+    if (!fs.existsSync(envPath)) return;
+    const lines = fs.readFileSync(envPath, 'utf8').split('\n');
+    for (const [key, val] of Object.entries(updates)) {
+      const i = lines.findIndex((l) => l.startsWith(`${key}=`));
+      // 保留行尾注释
+      const comment = i >= 0 ? (lines[i].match(/\s+#.*$/)?.[0] ?? '') : '';
+      const line = `${key}=${val}${comment}`;
+      if (i >= 0) lines[i] = line;
+      else lines.push(line);
+    }
+    fs.writeFileSync(envPath, lines.join('\n'));
+  } catch (e) {
+    console.error('[config] 回写 .env 失败:', e?.message ?? e);
+  }
+}
+
+/**
+ * 运行时切换模型/思考档。立即生效（下一次调用即用新值），并回写 .env 让重启后保持。
+ * 返回 { model, effort } 或抛错（取值非法时）。
+ */
+export function setRuntimeConfig({ model, effort } = {}) {
+  const updates = {};
+  if (model !== undefined && model !== null && model !== '') {
+    const resolved = MODEL_ALIASES[String(model).toLowerCase()] ?? String(model).trim();
+    if (!/^[a-zA-Z0-9._-]+$/.test(resolved)) throw new Error(`模型名不合法：${model}`);
+    CLAUDE_MODEL = resolved;
+    updates.CLAUDE_MODEL = resolved;
+  }
+  if (effort !== undefined && effort !== null && effort !== '') {
+    const e = String(effort).toLowerCase().trim();
+    if (!EFFORT_LEVELS.includes(e)) throw new Error(`思考档不合法：${effort}（可选 ${EFFORT_LEVELS.join('/')}）`);
+    CLAUDE_EFFORT = e;
+    updates.CLAUDE_EFFORT = e;
+  }
+  if (Object.keys(updates).length) patchEnvFile(updates);
+  return getRuntimeConfig();
+}
 // 飞书文档/多维表格工具开关（默认开；仅 owner 生效，权限由飞书后台 scope 决定）
 const FEISHU_TOOLS = process.env.FEISHU_TOOLS !== 'false';
 
