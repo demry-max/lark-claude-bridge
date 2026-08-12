@@ -1,6 +1,6 @@
 # lark-claude-bridge
 
-[![version](https://img.shields.io/badge/version-1.4.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![version](https://img.shields.io/badge/version-1.5.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Chat with Claude Code from Lark** — DM the bot or @mention it in a group chat, and Claude answers with full context continuity: it reads images, files, and voice messages, and remembers across days and weeks. **No public server, domain, or callback URL required** — events arrive over Lark's persistent WebSocket connection, so it runs on any machine with Claude Code installed.
 
@@ -18,6 +18,7 @@ Sister projects: [feishu-claude-bridge](https://github.com/demry-max/feishu-clau
 - 🛡️ **Outbound redaction**: keys, tokens, JWTs and private IPs stripped before sending
 - 🔊 **Voice replies**: `/voice` adds a spoken version of each answer
 - 🩺 **Scheduled-task self-diagnosis**: failures are analysed automatically with a recommended action
+- 🧷 **Persist memory before compaction**: nudges the bot to write durable facts into `memory/` before Claude Code auto-compacts the history
 - 🔀 **Switch models on the fly**: `/model fable high` changes model and thinking effort instantly — no restart — and jobs can switch automatically on a schedule
 - 📄 **Lark Docs / Bitable read & write**: built-in MCP tools (read a doc, append paragraphs, list tables/fields, read and write Bitable records) using the **bot app's own tenant permissions** — what it can touch is governed by the scopes you enable; owner-only
 - 🖼️ **Send images and files back**: anything the bot writes into `workspace/outbox/` is uploaded and sent automatically (images preview inline)

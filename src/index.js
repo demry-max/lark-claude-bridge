@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import * as lark from '@larksuiteoapi/node-sdk';
 import path from 'node:path';
-import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR, cancelRun, isRunning, getRuntimeConfig, setRuntimeConfig, MODEL_ALIASES, EFFORT_LEVELS } from './claude.js';
+import { runClaude, resetSession, sessionInfo, WORKSPACE_DIR, cancelRun, isRunning, getRuntimeConfig, setRuntimeConfig, MODEL_ALIASES, EFFORT_LEVELS, consumeMemoryNudge } from './claude.js';
 import { buildPrompt } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
 import { startScheduler } from './scheduler.js';
@@ -269,6 +269,15 @@ async function handleMessage(data) {
   if (message.chat_type !== 'p2p') {
     const name = await resolveSenderName(client, senderOpenId);
     if (name) prompt = `[群成员 ${name}]：${text}`;
+  }
+
+  // 上下文接近压缩点：提醒机器人先固化记忆（仅 owner——只有 owner 有 memory 写权限）
+  if (isOwner && consumeMemoryNudge(message.chat_id)) {
+    prompt +=
+      '\n\n（系统提示：本会话上下文接近上限，即将被自动压缩。压缩只影响对话历史，不影响 memory/ 文件。' +
+      '请先检查这段对话里有哪些值得长期保留的事实、决定、偏好还没写进 memory/，有就现在写入并更新 MEMORY.md 索引；' +
+      '没有就忽略本提示，正常回答用户的问题。不要因为这条提示改变回答的语气或结构。）';
+    console.log(`[context] 已向 ${message.chat_id} 注入固化记忆提醒`);
   }
 
   enqueue(message.chat_id, async () => {

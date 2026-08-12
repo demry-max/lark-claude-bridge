@@ -2,6 +2,23 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-08-13
+
+### Added
+- **Persist memories before context compaction**: the bridge tracks how much context each turn feeds in and, once it
+  crosses `CONTEXT_NUDGE_TOKENS` (default 850k, `0` disables), injects a one-time reminder into the **next** prompt so
+  the bot writes durable facts/decisions/preferences from that stretch of conversation into `memory/` and updates the
+  index. Owner-only (only the owner can write memory), fires exactly once (consumed on read), and explicitly instructs
+  the bot not to change its tone because of it.
+- **`/status` shows context usage**: current context size and the reminder threshold, so you can see how far the
+  session is from compaction.
+
+### Background
+Claude Code auto-compacts conversation history near the context limit (observed on one session at 1,001,111 tokens —
+earlier turns replaced by a summary). Compaction does **not** touch `memory/` files, which live on disk and are
+re-read every call — but it also does **not** write anything into memory, so details that only lived in the
+conversation are lost. This closes that gap.
+
 ## [1.4.0] - 2026-08-10
 
 ### Added
