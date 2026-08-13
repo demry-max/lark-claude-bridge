@@ -1,6 +1,6 @@
 # lark-claude-bridge
 
-[![version](https://img.shields.io/badge/version-1.5.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![version](https://img.shields.io/badge/version-1.6.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Chat with Claude Code from Lark** — DM the bot or @mention it in a group chat, and Claude answers with full context continuity: it reads images, files, and voice messages, and remembers across days and weeks. **No public server, domain, or callback URL required** — events arrive over Lark's persistent WebSocket connection, so it runs on any machine with Claude Code installed.
 
@@ -29,22 +29,27 @@ Sister projects: [feishu-claude-bridge](https://github.com/demry-max/feishu-clau
 - 💰 **Runs on your Claude subscription, not API keys**: headless `claude -p` reuses your local Claude Code login
 - 🖥️ **macOS + Windows** (cross-spawn handles `.cmd` shims)
 
-## 🗂️ Agent Workspace (Hermes-style memory & skills)
+## 🗂️ Agent Workspace (OpenClaw / Hermes-style three-layer memory & skills)
 
-The bot is more than Q&A — `workspace/` is its persistent home:
+The bot is more than Q&A — `workspace/` is its persistent home, with a three-layer long-term memory modeled on OpenClaw and Hermes Agent:
 
 ```
 workspace/
-├── CLAUDE.md          # Persona & protocols (auto-loaded on every call)
-├── memory/            # Long-term memory: one fact = one md file
-│   └── MEMORY.md      # Index, injected on every conversation via @import
-└── skills/            # Self-authored skills, synced into .claude/skills
+├── CLAUDE.md          # Persona & behavior protocol (auto-loaded every call)
+├── memory/
+│   ├── USER.md        # Profile layer: the user's identity, preferences and style — auto-loaded every conversation
+│   ├── MEMORY.md      # Facts index: one durable fact per line, injected via @import
+│   ├── <slug>.md      # Facts layer: one memory = one file, Read on demand
+│   └── journal/       # Journal layer: daily working notes (YYYY-MM-DD.md), retrieved via Grep, zero context cost
+└── skills/            # Self-authored skills, synced by the bridge into .claude/skills
 ```
 
-- Tell it "**remember**: I fly to Manila next Wednesday" → written to `memory/`, effective across all future sessions and chats
-- Teach it a workflow and say "**save this as a skill**" → it writes `skills/<name>/SKILL.md`, auto-loaded in every later session
-- Ask "**what skills do you have**" → it lists them
-- Safety: write access is limited to `memory/` and `skills/` only (Claude Code itself forbids agents from writing `.claude/`; the bridge syncs skills over), and the protocol forbids storing secrets in memory
+- **Proactive capture**: no need to say "remember" — when you correct its conclusions, make a decision, state a preference or give an authoritative number, it persists on the spot (explicit "**remember**: I fly to Manila next Wednesday" works too)
+- **Supersede, never contradict**: when a fact changes it rewrites the file in place with a date; files about the same thing get merged into denser versions
+- **Weekly consolidation ("dreaming")**: ask it to "set up a weekly memory-consolidation task" — it schedules a job that reads 7 days of journal, promotes durable items, merges duplicates, fixes stale entries and reports
+- **Persist before compaction**: nudged automatically to write what matters into memory before the context gets auto-compacted
+- Teach it a workflow and say "**save this as a skill**" → it writes `skills/<name>/SKILL.md`, auto-loaded in all later sessions; ask "**what skills do you have**" anytime
+- Safety: write access is limited to `memory/`, `skills/` and similar whitelisted directories (Claude Code itself forbids agents from writing `.claude/`; the bridge syncs skills over), and the protocol forbids storing secrets in memory
 
 ## Quick Start
 

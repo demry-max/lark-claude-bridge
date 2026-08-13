@@ -2,6 +2,17 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-08-13
+
+### Added
+- **Three-layer memory architecture (modeled on OpenClaw / Hermes Agent)**: `memory/` splits into a profile layer (`USER.md` — the user's identity, preferences and style, auto-loaded every conversation), a facts layer (one fact per file + `MEMORY.md` index) and a journal layer (`journal/YYYY-MM-DD.md` daily working notes, retrieved via Grep at zero context cost).
+- **Proactive capture rules**: the bot persists memories without being told "remember" — corrections to its assumptions, decisions, preferences, authoritative numbers and deadline commitments are written on the spot; plus an explicit skip-list, a supersede rule (rewrite in place, never contradict) and a Grep-before-answering rule for questions about the past.
+- **Weekly consolidation ("dreaming")**: ask the bot to set up a weekly scheduled task that reads the last 7 days of journal, promotes durable items, merges duplicates, fixes stale entries and reports the changes.
+- The pre-compaction nudge (v1.5.0) now speaks the layered dialect: profile → USER.md, durable facts → own file + index, process details → journal.
+
+### Changed
+- `workspace/CLAUDE.md` memory protocol rewritten; added `workspace/memory/USER.md` skeleton and `memory/journal/` directory.
+
 ## [1.5.0] - 2026-08-13
 
 ### Added
