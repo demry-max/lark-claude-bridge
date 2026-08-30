@@ -2,6 +2,43 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] - 2026-08-30
+
+Clears the remaining medium/low findings from the acceptance review. No breaking changes.
+
+### Hardening
+
+- **Hard floor on guest tools**: `Bash`/`Write`/`SendMessage`/`Artifact`/`Workflow` and friends are
+  now denied in code. The `GUEST_TOOLS` env var can only **add** other tools to the allowlist, never
+  unlock these (previously a mis-set env could widen the restriction entirely).
+- **Guest system prompt no longer carries owner-side concepts** (outbox, scheduling, chat_id) — a
+  guest has none of those capabilities, and describing them only invites attempts.
+
+### Fixed
+
+- Progress-card sends now form a real serial chain. The previous version awaited a snapshot of the
+  in-flight request, so with three concurrent flushes the third still raced the second and created
+  duplicate cards.
+- `/redirect` and `/new` now also abort a retry that is waiting in backoff (previously only
+  `cancelRun` was called, so during backoff the old request still ran to completion first).
+- The chat failure path also flushes that turn's outbox, so files written during a failed turn are
+  no longer attached to the next successful answer.
+- State paths now use `DATA_DIR` exported from `store.js`: with a custom `WORKSPACE_DIR` the derived
+  directory could be missing, writes were silently swallowed, and startup-notice dedup never worked.
+- Exit damping is now an **escalating backoff that persists across restarts** (15s→1m→5m→15m, reset
+  after 5 minutes of stable running), and the launchd example's `ThrottleInterval` went from 10 to 60.
+- `/tasks` lists jobs correctly before any state file exists instead of erroring out.
+- Bare-date one-shot jobs (`2026-09-01`) parse at local midnight instead of being read as UTC.
+- Files left in the v1.x `outbox/` root are collected into `outbox/_legacy/` at startup — after the
+  upgrade they could neither be sent nor cleaned and would simply sit there.
+
+### Docs
+
+- Added `.env.example` covering every switch, grouped and annotated with defaults and the
+  consequence of leaving each blank.
+- README corrected: since v2.0.0 the first person to DM the bot no longer becomes owner by default;
+  manual installs must set `OWNER_OPEN_ID` in `.env`.
+
 ## [2.0.1] - 2026-08-30
 
 ### Security (important — upgrade from 2.0.0)

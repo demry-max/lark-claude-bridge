@@ -78,19 +78,26 @@ const ALLOWED_TOOLS =
   process.env.ALLOWED_TOOLS ?? 'Read,Grep,Glob,WebSearch,WebFetch';
 // 非 owner（同事/群成员）不给本机文件工具，只允许联网检索
 const NON_OWNER_TOOLS = process.env.NON_OWNER_TOOLS ?? 'WebSearch';
-// **Allowlist** of built-in tools available to guests (--tools).
+// 访客可用的内置工具**白名单**（--tools）。
 //
-// It must be an allowlist, not a blocklist: --disallowedTools only blocks names you thought of;
-// every other built-in stays available. Measured: with the blocklist a guest still held 22 tools,
-// including SendMessage / Artifact / CronCreate / Workflow / ListAgents, all of which run
-// under the OWNER's Claude account, letting a guest publish pages, create cron jobs, and even
-// inject messages into the owner's privileged running sessions. The allowlist cut 22 tools to 1.
-// An allowlist is also future-proof: new built-ins do not silently become guest-reachable.
-// WebFetch is excluded by default: it does not restrict destinations, so a guest can probe
-// localhost and the LAN (http://127.0.0.1:3000 really connects; the error reveals reachability)
-// and can exfiltrate data through the URL. Set GUEST_TOOLS to opt in if guests must read pages.
+// 必须是白名单而不是黑名单：--disallowedTools 只能挡住你想到的工具名，
+// 任何没列进去的内置工具照样可用。实测黑名单方案下访客手里仍有 22 个工具，
+// 包括 SendMessage / Artifact / CronCreate / Workflow / ListAgents —— 而且它们
+// 跑在 owner 的 Claude 账号身份下，等于访客能以 owner 身份发布网页、建定时任务、
+// 甚至把消息注入 owner 正在跑的高权限会话。换成白名单后工具数从 22 降到 2。
+// 白名单还天然面向未来：CLI 以后新增的内置工具不会自动对访客开放。
+// 默认不含 WebFetch：它对目标地址不做限制，访客可借它探测本机与内网
+// （实测 http://127.0.0.1:3000 会真的发起连接，错误信息即泄露端口可达性），
+// 也可把数据编码进 URL 外传。需要访客能读网页时用 GUEST_TOOLS 显式打开。
 const GUEST_TOOLS = process.env.GUEST_TOOLS ?? 'WebSearch';
-// The blocklist stays as defence in depth if the allowlist is ever widened
+// Never available to guests regardless of env: env may add other tools, never unlock these
+const GUEST_HARD_DENY = [
+  'Bash', 'BashOutput', 'KillShell', 'Edit', 'Write', 'NotebookEdit', 'Task', 'Agent', 'Skill',
+  'SendMessage', 'Artifact', 'CronCreate', 'CronDelete', 'CronList', 'Workflow', 'ListAgents',
+  'RemoteTrigger', 'PushNotification', 'ScheduleWakeup', 'TaskCreate', 'TaskUpdate',
+  'DesignSync', 'EnterWorktree', 'ExitWorktree', 'Monitor',
+];
+// 黑名单保留作双保险（万一将来白名单被放宽，这些依然被显式拒绝）
 const GUEST_DENIED_TOOLS =
   process.env.GUEST_DENIED_TOOLS ??
   'Bash,BashOutput,KillShell,Edit,Write,NotebookEdit,Task,Agent,Skill,SendMessage,Artifact,CronCreate,CronDelete,CronList,Workflow,ListAgents,RemoteTrigger,PushNotification,ScheduleWakeup,TaskCreate,TaskUpdate,DesignSync,EnterWorktree,ExitWorktree,Monitor';
@@ -310,6 +317,17 @@ function syncSkills() {
 // 定时任务与聊天是并发的两个 claude 进程、共享同一工作区，写文件必然互相覆盖，
 // 模型会读到别人的 chat_id（进而把排期发错会话）。逐次注入天然无竞态。
 function runtimeSystemPrompt(chatId, model, effort, isOwner) {
+  // A guest only needs to know which model it runs on. outbox, scheduling and chat_id are
+  // owner-side concepts — telling a guest about them only invites it to attempt what it lacks
+  if (!isOwner) {
+    return [
+      '# 当前运行配置（由桥接注入，权威来源）',
+      `- 模型：${model || '（未指定，走 claude CLI 默认）'}`,
+      `- 思考深度 effort：${effort || '（未指定，走 CLI 默认）'}`,
+      '',
+      '被问到「你用什么模型/什么思考档位」时**以上面为准**，不要凭自身记忆推测。',
+    ].join('\n');
+  }
   const realChat = typeof chatId === 'string' && !chatId.startsWith('sched') ? chatId : null;
   const outboxRel = `./outbox/${safeKey(chatId)}/`;
   return [
@@ -368,20 +386,24 @@ export function buildClaudeArgs(chatId, isOwner = false, extraTools = [], opts =
     //   --setting-sources project  只读项目级配置，屏蔽用户级 allow 规则
     //   --strict-mcp-config        不加载用户级 MCP（Drive/Gmail/QuickBooks 等）
     //   --disallowedTools          显式拉黑，减法项，优先级高于任何 allow
-    // Load no settings files at all: user-level permissions.allow caused the CRITICAL above,
-    // and a project-level file can just as easily be committed with an allow rule
+    // 不加载任何 settings 文件：user 级的 permissions.allow 是这次 CRITICAL 的根源，
+    // project 级同样可能被提交进仓库（谁都能加一条 allow 规则）
     args.push('--setting-sources', '');
     args.push('--strict-mcp-config');
-    // Allowlist: only these built-ins exist in the guest tool set.
-    // Read is added only when the guest sent an attachment, scoped by allowedTools Read(./incoming/**).
+    // 白名单：只有这些内置工具存在于访客的工具集里。
+    // 访客发了图片/文件时才追加 Read，且路径由 allowedTools 的 Read(./incoming/**) 限定。
     const needsRead = extraTools.some((e) => e.startsWith('Read('));
-    const allowTools = GUEST_TOOLS.split(',').map((s) => s.trim()).filter(Boolean);
+    // Hard floor beats env: a mis-set or widened GUEST_TOOLS cannot unlock these
+    const allowTools = GUEST_TOOLS.split(',')
+      .map((s) => s.trim())
+      .filter((x) => x && !GUEST_HARD_DENY.includes(x));
     if (needsRead && !allowTools.includes('Read')) allowTools.push('Read');
     args.push('--tools', allowTools.join(','));
-    // Defence in depth: deny the dangerous ones explicitly on top of the allowlist
-    const denied = GUEST_DENIED_TOOLS.split(',')
-      .map((s) => s.trim())
-      .filter((x) => x && !(x === 'Read' && needsRead));
+    // Defence in depth: deny the dangerous ones explicitly too (hard floor merged, deduped)
+    const denied = [...new Set([
+      ...GUEST_HARD_DENY,
+      ...GUEST_DENIED_TOOLS.split(',').map((s) => s.trim()).filter(Boolean),
+    ])].filter((x) => !(x === 'Read' && needsRead));
     args.push('--disallowedTools', denied.join(','));
     // 自动记忆按 git 仓库根归档，workspace 与 workspace-guest 同属一个仓库，
     // 不关就是与 owner 共用一份（读方向泄漏、写方向是持久化提示注入）。

@@ -66,8 +66,6 @@ export function createProgressChannel(client, messageId) {
 
   const flush = async () => {
     if (closed) return;
-    // 串行化：首帧还在建卡时第二帧就 patch，会因为 cardMessageId 尚未回填而重复建卡
-    if (inflight) { await inflight.catch(() => {}); if (closed) return; }
     lastSentAt = Date.now();
     const shown = lines.slice(-PROGRESS_MAX_LINES);
     const omitted = lines.length - shown.length;
@@ -77,7 +75,11 @@ export function createProgressChannel(client, messageId) {
       ...(omitted > 0 ? [`…（前 ${omitted} 步已省略）`] : []),
       ...shown.map((l, i) => `${i === shown.length - 1 ? '🔄' : '✅'} ${l}`),
     ].join('\n');
-    const send = (async () => {
+    // A real serial chain: each send is queued behind the previous one.
+    // The earlier version awaited a snapshot of inflight, so with three concurrent flushes the
+    // third raced the second, both saw it empty, and duplicate cards were still created.
+    const send = (inflight ?? Promise.resolve()).then(async () => {
+      if (closed) return;
       if (!cardMessageId) {
         const res = await client.im.v1.message.reply({
           path: { message_id: messageId },
@@ -90,14 +92,12 @@ export function createProgressChannel(client, messageId) {
           data: { content: JSON.stringify(card(body)) },
         });
       }
-    })();
-    inflight = send;
+    });
+    inflight = send.catch(() => {}); // keep the chain on a settled promise so rejections are never unhandled
     try {
       await send;
     } catch (e) {
       console.error('[progress]', e?.message ?? e);
-    } finally {
-      if (inflight === send) inflight = null;
     }
   };
 
@@ -136,6 +136,31 @@ export function createProgressChannel(client, messageId) {
 }
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+
+/**
+ * 一次性迁移：v1.x 用 outbox 根目录做回传，升级到按会话隔离后，
+ * 根目录里的残留文件既不会被发送也不会被清理，会一直躺在那儿。
+ * 归拢到 _legacy/ 并告知调用方，让 owner 知道有东西需要处理。
+ */
+export function migrateLegacyOutbox(outboxRoot) {
+  if (!fs.existsSync(outboxRoot)) return 0;
+  let moved = 0;
+  try {
+    const legacy = path.join(outboxRoot, '_legacy');
+    for (const name of fs.readdirSync(outboxRoot)) {
+      const p = path.join(outboxRoot, name);
+      if (name.startsWith('.') || name === '_legacy') continue;
+      if (!fs.statSync(p).isFile()) continue; // 会话子目录不动
+      fs.mkdirSync(legacy, { recursive: true });
+      fs.renameSync(p, path.join(legacy, name));
+      moved++;
+    }
+  } catch (e) {
+    console.error('[outbox-migrate]', e?.message ?? e);
+  }
+  if (moved) console.log(`[outbox] 已把 ${moved} 个 v1.x 遗留文件移到 outbox/_legacy/（不会自动发送）`);
+  return moved;
+}
 
 /**
  * 回传附件：机器人把要发的文件写进本轮专属的 outbox 子目录，本函数发送后清空。
