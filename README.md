@@ -1,6 +1,6 @@
 # lark-claude-bridge
 
-[![version](https://img.shields.io/badge/version-1.6.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![version](https://img.shields.io/badge/version-2.0.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Chat with Claude Code from Lark** — DM the bot or @mention it in a group chat, and Claude answers with full context continuity: it reads images, files, and voice messages, and remembers across days and weeks. **No public server, domain, or callback URL required** — events arrive over Lark's persistent WebSocket connection, so it runs on any machine with Claude Code installed.
 
@@ -10,6 +10,7 @@ Sister projects: [feishu-claude-bridge](https://github.com/demry-max/feishu-clau
 
 ## Features
 
+- 🔒 **Guest isolation**: non-owners run in a separate workspace with user-level config and MCP cut off and local tools explicitly denied — they cannot reach your memory or borrow your permissions
 - 🔌 **Zero public-network dependency**: events over a persistent WebSocket — deploy on a home computer
 - 📲 **App created by scanning a QR code**: `npm run register` uses Lark's official app-registration OAuth flow — one scan auto-creates the app, writes credentials to `.env`, and registers you as owner
 - 🧠 **Session memory**: each Lark chat maps to one Claude session (`--resume`), valid across days; `/new` to reset, `/status` to inspect
@@ -28,6 +29,28 @@ Sister projects: [feishu-claude-bridge](https://github.com/demry-max/feishu-clau
 - 🔐 **Tiered permissions**: the first person to DM the bot becomes **owner** (local read-only tools + web); everyone else gets web search only and cannot touch your machine's files
 - 💰 **Runs on your Claude subscription, not API keys**: headless `claude -p` reuses your local Claude Code login
 - 🖥️ **macOS + Windows** (cross-spawn handles `.cmd` shims)
+
+## 🔒 Permission boundary (since v2.0.0)
+
+The owner and everyone else run in **two physically separate workspaces**. This is the most
+important security property of the project:
+
+| | Owner | Colleagues / group members |
+|---|---|---|
+| Workspace | `workspace/` (long-term memory) | `workspace-guest/` (clean, no memory imports) |
+| Tools | local read-only + web + memory/skills/schedule writes + platform docs | **web search only** |
+| Config sources | full (user-level settings and MCP) | project only: `--setting-sources project` + `--strict-mcp-config` |
+| CLI auto-memory | on | off (that store is keyed by git repo root — shared otherwise) |
+| Sessions | by chat_id | by chat_id + sender, mutually invisible |
+
+> **Why `--allowedTools` is not enough**: it is not a sandbox. It is an allow-without-asking list and
+> purely additive — `permissions.allow` from the user-level `~/.claude/settings.json` still applies to
+> guest sessions. In v1.x a guest could therefore execute local CLI tools acting as the owner.
+> Real containment requires cutting the config source plus an explicit `--disallowedTools` deny list
+> (subtractive, beats any allow rule).
+
+Third-party content (forwarded logs, card JSON, file names, titles) is wrapped in an untrusted-data
+fence declaring it is not instructions; outbound replies are redacted before sending.
 
 ## 🗂️ Agent Workspace (OpenClaw / Hermes-style three-layer memory & skills)
 

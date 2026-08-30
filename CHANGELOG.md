@@ -2,6 +2,92 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-08-30
+
+> This release fixes a **critical security flaw**. If you expose the bot to anyone besides the
+> owner (colleague DMs, group chats), upgrade immediately.
+
+### Security (important)
+
+- **Guests can no longer borrow the owner's permissions to run tools.** Non-owners were limited
+  with `--allowedTools` alone, but that is not a sandbox — it is an allow-without-asking list and
+  purely additive; `permissions.allow` in the user-level `~/.claude/settings.json` still applies to
+  guest sessions. In testing, a guest could execute local CLI tools acting as the owner. Guests now
+  run with `--setting-sources project` + `--strict-mcp-config` + an explicit `--disallowedTools`
+  deny list (subtractive, beats any allow rule).
+- **Guest and owner workspaces are physically separated**: non-owners run in a new
+  `workspace-guest/` whose CLAUDE.md contains no `@memory/` imports. Previously everyone shared the
+  owner workspace, so the profile and memory index were injected into every conversation — locking
+  down tools does not lock down context.
+- **Guests run with CLI auto-memory disabled** (`autoMemoryEnabled: false`). That store is keyed by
+  git repo root, which owner and guest share — leaving it on means one shared memory (a leak one
+  way, persistent prompt injection the other).
+- **Session keys are scoped by identity**: in a group, owner and guests share a `chat_id`; sharing
+  the session let a guest `--resume` straight into the owner's memory-bearing conversation. Guest
+  keys are further scoped per sender, so guests neither read each other's history nor plant
+  long-lived instructions in a shared session.
+- **Third-party content is fenced**: forwarded chat logs, card JSON, file names and message titles
+  are wrapped and declared "not instructions", with a CSPRNG nonce and forged closing markers stripped.
+- **Owner claim tightened**: `ALLOW_USERS` (who may use the bot) is decoupled from claim eligibility;
+  new `OWNER_OPEN_ID` is the authoritative source. A missing record no longer auto-claims unless
+  `ALLOW_OWNER_CLAIM=true`. A failed `saveOwner` no longer reports success.
+- Scheduled-task `action` values are whitelisted; unknown actions are refused.
+
+### Fixed
+
+- **`/redirect` had never worked since v1.3.0**: a declaration-order bug caused a TDZ crash — and it
+  crashed *after* cancelling the running task, so the old task died, the new instruction never ran,
+  and the user saw nothing at all.
+- **Permanently deaf after the WebSocket gave up**: once the reconnect budget ran out the process
+  stayed alive and the supervisor saw nothing wrong. It now exits for the supervisor to restart,
+  with backoff (no restart storms) and a ping watchdog.
+- **Shared outbox delivered files to the wrong chat**: files written by scheduled jobs lingered and
+  were sent along with the next unrelated message. Now isolated per session, and flushed on both the
+  success and failure paths of scheduled jobs.
+- **Retry replayed tasks that had already caused side effects**: retries are now limited to failures
+  that occurred before any output. `502|503|529` gained word boundaries so numbers in prose no longer
+  match.
+- **Scheduled-job sessions were resumed forever**: the `sched:` pseudo-session blocked writes but not
+  reads, so weeks of reports accumulated in one context.
+- **Context-usage metric was wrong**: cumulative per-turn usage was treated as resident context,
+  inflating the number several-fold and firing the nudge early.
+- Scheduler: locking moved from the whole tick to the individual job (a long job no longer starves
+  its peers past the catch-up window), per-key state writes, late jobs skipped, cron macros like
+  `@daily` no longer mistaken for one-shot timestamps, rescheduling no longer back-fires once, and
+  state distinguishes done/skipped/failed.
+- Progress cards: throttled, capped, in-flight requests serialised (no duplicate cards), and closed
+  out on cancel/failure instead of sitting at "processing" forever.
+- `/cancel` now works during the retry backoff window instead of claiming nothing is running.
+- `.env` and all state files are written atomically (a truncated `.env` made startup fail and the
+  supervisor loop forever).
+- Process-level `uncaughtException`/`unhandledRejection` handling; `stdin` EPIPE and state-write
+  failures no longer kill the process.
+- `/voice on` no longer turns voice *off* when it was already on.
+- `/new` is no longer silently undone by a finishing task writing the old session back.
+
+### Added
+
+- **Automatic memory recall**: each message triggers a keyword search over `memory/` (journal
+  included) and the likely-relevant files are surfaced to the model. Previously recall depended on
+  the model remembering to grep — it wrote diligently but often failed to look.
+- **`/tasks`**: last/next fire time and status for every scheduled job.
+- **Startup notice**: the owner is told when the bridge restarts (deduped within 30 minutes), so a
+  dead process is no longer silent.
+- **Silence when there is nothing to report**: a job returning `HEARTBEAT_OK` is skipped, making
+  watchdog-style jobs practical.
+- **Per-job model**: scheduled jobs may set `model`/`effort` (cheap model for routine checks).
+- **Attachment TTL**: `incoming/` is cleaned periodically (24MB had accumulated in practice).
+- **Regression tests** (`npm test`, no extra dependencies): behaviour-based, and mutation-tested —
+  reverting a fix turns them red.
+
+### Breaking changes
+
+- `workspace/runtime.md` is gone: runtime configuration is injected into the system prompt per call
+  (the shared file was overwritten by concurrent runs, so the model could read someone else's chat_id).
+- The file-return directory moved from `outbox/` to `outbox/<per-run>/`, communicated via the system
+  prompt; files written to the root are no longer sent.
+- `schedule-state.json` entries changed from a string to `{at, when, status}` (old format still read).
+
 ## [1.6.0] - 2026-08-13
 
 ### Added
