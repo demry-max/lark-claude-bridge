@@ -47,15 +47,28 @@ describe('访客隔离（行为断言）', () => {
     assert.ok(!guestMd.includes('@memory/'), '访客上下文绝不能注入 owner 的画像与记忆索引');
   });
 
-  test('访客切断用户级配置来源（--allowedTools 不是沙箱）', () => {
-    // 用户级 settings 的 permissions.allow（本机含 Bash(lark-cli *)）会对访客生效，
-    // 实测访客曾能直接跑 lark-cli，以 owner 的飞书身份读写。只能靠这三个开关收权。
-    assert.equal(argVal(guest.args, '--setting-sources'), 'project');
-    assert.ok(guest.args.includes('--strict-mcp-config'));
-    const denied = (argVal(guest.args, '--disallowedTools') ?? '').split(',');
-    for (const t of ['Bash', 'Write', 'Edit', 'Task', 'Agent']) {
-      assert.ok(denied.includes(t), `访客必须显式拉黑 ${t}`);
+  test('访客工具集是白名单而非黑名单', () => {
+    // 黑名单只能挡住你想到的名字：实测 --disallowedTools 方案下访客仍有 22 个内置工具，
+    // 含 SendMessage / Artifact / CronCreate / Workflow，且都以 owner 的账号身份运行。
+    const tools = (argVal(guest.args, '--tools') ?? '').split(',').filter(Boolean);
+    assert.ok(tools.length > 0, '必须显式声明访客可用的内置工具');
+    for (const bad of ['SendMessage', 'Artifact', 'CronCreate', 'Workflow', 'ListAgents', 'Bash', 'Task']) {
+      assert.ok(!tools.includes(bad), `${bad} 绝不能出现在访客白名单里`);
     }
+    // allowedTools 必须与白名单一致，否则白名单里有、免询问列表里没有 → -p 模式下会卡在询问
+    const allowed = (argVal(guest.args, '--allowedTools') ?? '').split(',').filter(Boolean);
+    for (const x of tools) assert.ok(allowed.includes(x), `${x} 在白名单里就必须免询问`);
+  });
+
+  test('访客不加载任何 settings 文件', () => {
+    // user 级 permissions.allow 是上一轮 CRITICAL 的根源；project 级同样可能被提交进仓库
+    assert.equal(argVal(guest.args, '--setting-sources'), '');
+    assert.ok(guest.args.includes('--strict-mcp-config'));
+  });
+
+  test('访客默认没有 WebFetch（可探测本机与内网）', () => {
+    const tools = (argVal(guest.args, '--tools') ?? '').split(',');
+    assert.ok(!tools.includes('WebFetch'), 'WebFetch 不限制目标地址，实测可连 127.0.0.1 探测端口');
   });
 
   test('访客关闭自动记忆，且用的是真实存在的配置键', () => {

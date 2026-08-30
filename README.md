@@ -1,6 +1,6 @@
 # lark-claude-bridge
 
-[![version](https://img.shields.io/badge/version-2.0.0-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![version](https://img.shields.io/badge/version-2.0.1-blue)](CHANGELOG.md) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Chat with Claude Code from Lark** — DM the bot or @mention it in a group chat, and Claude answers with full context continuity: it reads images, files, and voice messages, and remembers across days and weeks. **No public server, domain, or callback URL required** — events arrive over Lark's persistent WebSocket connection, so it runs on any machine with Claude Code installed.
 

@@ -11,10 +11,10 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 export const WORKSPACE_DIR =
   process.env.WORKSPACE_DIR || path.resolve(__dirname, '..', 'workspace');
 
-// Guest workspace: every non-owner call runs here.
-// The owner's workspace/CLAUDE.md imports @memory/USER.md and @memory/MEMORY.md, so the
-// profile and memory index are in every context. Sharing that cwd with colleagues means
-// --allowedTools alone is no boundary — the private memory is already there. Isolate the cwd.
+// 访客工作区：非 owner 一律在此运行。
+// owner 的 workspace/CLAUDE.md 用 @memory/USER.md、@memory/MEMORY.md 把画像与记忆索引
+// 注入每一次上下文——若同事/群成员共用同一个 cwd，光靠 --allowedTools 挡工具是不够的，
+// 私有记忆已经在模型手里了。隔离 cwd 才是真边界。
 export const GUEST_WORKSPACE_DIR =
   process.env.GUEST_WORKSPACE_DIR || path.resolve(__dirname, '..', 'workspace-guest');
 
@@ -50,7 +50,7 @@ You are an AI assistant reachable over Lark, currently answering **someone who i
 
 ## Boundaries
 
-- You only have web tools (WebSearch/WebFetch). No local files, memory, skills or scheduled tasks.
+- You only have web tools (WebSearch). No local files, memory, skills or scheduled tasks.
 - You do **not** hold any personal information, internal company material or past conversations
   belonging to the bot's owner. If asked, say plainly that guest mode has none of that and point
   them to the person directly — never guess or invent.
@@ -77,11 +77,23 @@ ensureGuestWorkspace();
 const ALLOWED_TOOLS =
   process.env.ALLOWED_TOOLS ?? 'Read,Grep,Glob,WebSearch,WebFetch';
 // 非 owner（同事/群成员）不给本机文件工具，只允许联网检索
-const NON_OWNER_TOOLS = process.env.NON_OWNER_TOOLS ?? 'WebSearch,WebFetch';
-// 访客一律拉黑的工具（减法项，压过任何 allow 规则）
+const NON_OWNER_TOOLS = process.env.NON_OWNER_TOOLS ?? 'WebSearch';
+// **Allowlist** of built-in tools available to guests (--tools).
+//
+// It must be an allowlist, not a blocklist: --disallowedTools only blocks names you thought of;
+// every other built-in stays available. Measured: with the blocklist a guest still held 22 tools,
+// including SendMessage / Artifact / CronCreate / Workflow / ListAgents, all of which run
+// under the OWNER's Claude account, letting a guest publish pages, create cron jobs, and even
+// inject messages into the owner's privileged running sessions. The allowlist cut 22 tools to 1.
+// An allowlist is also future-proof: new built-ins do not silently become guest-reachable.
+// WebFetch is excluded by default: it does not restrict destinations, so a guest can probe
+// localhost and the LAN (http://127.0.0.1:3000 really connects; the error reveals reachability)
+// and can exfiltrate data through the URL. Set GUEST_TOOLS to opt in if guests must read pages.
+const GUEST_TOOLS = process.env.GUEST_TOOLS ?? 'WebSearch';
+// The blocklist stays as defence in depth if the allowlist is ever widened
 const GUEST_DENIED_TOOLS =
   process.env.GUEST_DENIED_TOOLS ??
-  'Bash,BashOutput,KillShell,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,Agent,Skill';
+  'Bash,BashOutput,KillShell,Edit,Write,NotebookEdit,Task,Agent,Skill,SendMessage,Artifact,CronCreate,CronDelete,CronList,Workflow,ListAgents,RemoteTrigger,PushNotification,ScheduleWakeup,TaskCreate,TaskUpdate,DesignSync,EnterWorktree,ExitWorktree,Monitor';
 // 空闲超时：只要 Claude 还在输出就不计时；静默超过该时长才判定卡死
 const CLAUDE_IDLE_TIMEOUT_MS = Number(process.env.CLAUDE_IDLE_TIMEOUT_MS || 600_000);
 // 绝对上限：无论多活跃，超过该时长也终止（兜底防失控）
@@ -349,23 +361,31 @@ export function buildClaudeArgs(chatId, isOwner = false, extraTools = [], opts =
     .join(',');
   if (tools) args.push('--allowedTools', tools);
   if (!isOwner) {
-    // Key point: --allowedTools is NOT a sandbox. It is an allow-without-asking list, additive only.
-    // permissions.allow in the user-level ~/.claude/settings.json still applies to guest
-    // sessions — verified in practice: a guest could run lark-cli, which acts as the OWNER
-    // on Lark (IM, mail, docs, approvals). Real containment needs the config source cut off:
-    //   --setting-sources project  project config only; user-level allow rules are ignored
-    //   --strict-mcp-config        do not load user-level MCP servers
-    //   --disallowedTools          explicit deny list; subtractive, beats any allow rule
-    args.push('--setting-sources', 'project');
+    // 关键：--allowedTools 不是沙箱，它只是「免询问」白名单，是加法项。
+    // 用户级 ~/.claude/settings.json 里的 permissions.allow（本机含 Bash(lark-cli *)）
+    // 对访客会话同样生效——实测访客能直接跑 lark-cli，而它以 owner 本人的飞书身份
+    // 读写 IM/邮件/云文档/审批。要真正收权只能切断配置来源并显式禁用工具：
+    //   --setting-sources project  只读项目级配置，屏蔽用户级 allow 规则
+    //   --strict-mcp-config        不加载用户级 MCP（Drive/Gmail/QuickBooks 等）
+    //   --disallowedTools          显式拉黑，减法项，优先级高于任何 allow
+    // Load no settings files at all: user-level permissions.allow caused the CRITICAL above,
+    // and a project-level file can just as easily be committed with an allow rule
+    args.push('--setting-sources', '');
     args.push('--strict-mcp-config');
-    // 访客发了图片/文件时要能 Read 它——放行 Read，但路径由 allowedTools 限定
+    // Allowlist: only these built-ins exist in the guest tool set.
+    // Read is added only when the guest sent an attachment, scoped by allowedTools Read(./incoming/**).
+    const needsRead = extraTools.some((e) => e.startsWith('Read('));
+    const allowTools = GUEST_TOOLS.split(',').map((s) => s.trim()).filter(Boolean);
+    if (needsRead && !allowTools.includes('Read')) allowTools.push('Read');
+    args.push('--tools', allowTools.join(','));
+    // Defence in depth: deny the dangerous ones explicitly on top of the allowlist
     const denied = GUEST_DENIED_TOOLS.split(',')
       .map((s) => s.trim())
-      .filter((x) => x && !(x === 'Read' && extraTools.some((e) => e.startsWith('Read('))));
+      .filter((x) => x && !(x === 'Read' && needsRead));
     args.push('--disallowedTools', denied.join(','));
-    // Auto-memory is keyed by git repo root; workspace and workspace-guest share one repo,
-    // so leaving it on means sharing memory with the owner (leak one way, prompt injection the other).
-    // The key is autoMemoryEnabled — a misspelled key is silently ignored in -p mode.
+    // 自动记忆按 git 仓库根归档，workspace 与 workspace-guest 同属一个仓库，
+    // 不关就是与 owner 共用一份（读方向泄漏、写方向是持久化提示注入）。
+    // 键名是 autoMemoryEnabled——写错的键在 -p 模式下会被静默忽略，等于没设。
     args.push('--settings', JSON.stringify({ autoMemoryEnabled: false }));
   }
   if (model) args.push('--model', model);

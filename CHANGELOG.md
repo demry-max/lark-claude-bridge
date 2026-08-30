@@ -2,6 +2,32 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-08-30
+
+### Security (important — upgrade from 2.0.0)
+
+Post-release acceptance testing found that v2.0.0's guest restrictions rested on a **blocklist**
+(`--disallowedTools`), which only blocks the names you listed. Measured: a guest still held
+**22 built-in tools**, including `SendMessage`, `Artifact`, `CronCreate`, `Workflow` and
+`ListAgents`. Worse, the guest process runs under the **owner's own Claude account**, so a
+non-owner could publish Artifacts and create cron jobs as the owner — and even **inject messages
+into the owner's running privileged sessions**, which hold full Bash/write access.
+
+- **Switched to an allowlist**: guests now use `--tools`, so only the explicitly listed built-ins
+  exist at all. Measured tool count dropped from 22 to 1 (`WebSearch`). This is also future-proof:
+  new built-ins shipped by the CLI will not silently become guest-reachable. The blocklist remains
+  as defence in depth.
+- **WebFetch removed from guests by default**: it does not restrict destinations — verified that
+  `http://127.0.0.1:3000` really connects, with the error revealing port reachability — and it can
+  exfiltrate data through the URL. Opt in with `GUEST_TOOLS=WebSearch,WebFetch` if needed.
+- **Guests load no settings files** (`--setting-sources ''`): user-level `permissions.allow` caused
+  the 2.0.0 CRITICAL, and a project-level file can just as easily be committed with an allow rule.
+
+### Notes
+
+Guests still get a temporary `Read` when they send an attachment, scoped to their own workspace by
+`Read(./incoming/**)`. Owner capabilities are unchanged.
+
 ## [2.0.0] - 2026-08-30
 
 > This release fixes a **critical security flaw**. If you expose the bot to anyone besides the
