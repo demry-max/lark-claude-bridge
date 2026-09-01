@@ -2,6 +2,17 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.3] - 2026-09-02
+
+### Changed
+
+- **The `fable` alias now points at Claude Fable 5.1** (`claude-fable-5-1`), consistently across
+  `/model fable`, a scheduled job's `model` field, and `CLAUDE_MODEL` in `.env`.
+  - Requires **Claude Code CLI >= 2.1.251**; older versions report `does not support this model` —
+    run `claude update`.
+  - Use `fable5` to stay on the previous generation (`claude-fable-5`); `fable5.1` is equivalent to `fable`.
+  - Note the full id is `claude-fable-5-1` — `claude-fable-5.1` is not a valid id.
+
 ## [2.0.2] - 2026-08-30
 
 Clears the remaining medium/low findings from the acceptance review. No breaking changes.

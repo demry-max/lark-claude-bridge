@@ -119,9 +119,14 @@ let CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 // 思考深度：low/medium/high/xhigh/max，留空=CLI 默认
 let CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
 
-// 模型短名 → 全名（也允许直接写全名）
+// Model short names → full ids (full ids also accepted)
+// Note: `fable` points at 5.1, which needs Claude Code CLI >= 2.1.251.
+// Older CLIs report "does not support this model" — run `claude update`,
+// or use `fable5` to stay on the previous generation.
 export const MODEL_ALIASES = {
-  fable: 'claude-fable-5',
+  fable: 'claude-fable-5-1',
+  'fable5': 'claude-fable-5',
+  'fable5.1': 'claude-fable-5-1',
   opus: 'claude-opus-5',
   sonnet: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5-20251001',
