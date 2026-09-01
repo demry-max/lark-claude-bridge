@@ -2,6 +2,15 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.4] - 2026-09-02
+
+### Added
+
+- **Log the model and effort actually in effect at startup**, and warn explicitly when a value in
+  `.env` is shadowed by a shell environment variable. dotenv does not override existing env vars, so
+  exporting `CLAUDE_MODEL`/`CLAUDE_EFFORT` in a terminal and starting by hand silently ignores
+  `.env` — previously this could only be found by reading the code.
+
 ## [2.0.3] - 2026-09-02
 
 ### Changed

@@ -684,3 +684,23 @@ setInterval(() => {
 console.log('Starting the Lark persistent connection…');
 wsClient.start({ eventDispatcher });
 announceStartup();
+
+// Print the configuration actually in effect: dotenv does not override existing env vars,
+// so exporting CLAUDE_MODEL/CLAUDE_EFFORT in a shell and starting by hand silently ignores .env
+{
+  const cfg = getRuntimeConfig();
+  const shadowed = ['CLAUDE_MODEL', 'CLAUDE_EFFORT', 'GUEST_TOOLS', 'OWNER_OPEN_ID']
+    .filter((k) => {
+      try {
+        const line = fs.readFileSync(path.resolve(process.cwd(), '.env'), 'utf8')
+          .split('\n').find((l) => l.startsWith(`${k}=`));
+        const inFile = line ? line.slice(k.length + 1).replace(/\s+#.*$/, '').trim() : null;
+        return inFile && process.env[k] && process.env[k] !== inFile;
+      } catch { return false; }
+    });
+  console.log(`[config] effective: model=${cfg.model || 'CLI default'} effort=${cfg.effort || 'CLI default'}`);
+  if (shadowed.length) {
+    console.error(`[config] WARNING: shadowed by the shell environment, .env values ignored: ${shadowed.join(', ')}`);
+  }
+}
+
