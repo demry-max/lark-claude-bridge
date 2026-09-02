@@ -12,6 +12,12 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+// claude starts the MCP server with the workspace as cwd; files must land inside it to be readable
+const WORKSPACE = process.env.WORKSPACE_DIR || process.cwd();
 
 const APP_ID = process.env.FEISHU_APP_ID;
 const APP_SECRET = process.env.FEISHU_APP_SECRET;
@@ -258,6 +264,96 @@ server.tool(
         data: { valueRange: { range, values } },
       });
       return ok({ updated: res?.data?.updatedCells ?? res?.updatedCells ?? null, range });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+// ---------- Mail attachments ----------
+// Why this exists: lark-cli can list attachment metadata and mint a download_url,
+// but the bot has no general Bash/curl to fetch it, and WebFetch only turns pages into text,
+// which is useless for binaries like PDF/docx. Net effect: it sees the filename, never the content.
+// This closes the gap (get link -> download into the workspace) so the model can just Read the file.
+//
+// Auth uses lark-cli's USER identity: mail lives in a personal mailbox the app's tenant token cannot read.
+server.tool(
+  'mail_attachment_download',
+  'Download a Lark mail attachment into the workspace and return a local path you can Read. ' +
+    'First get the message_id and attachment ids via lark-cli mail +message, then call this tool.',
+  {
+    message_id: z.string().describe('the mail message_id'),
+    attachment_ids: z.array(z.string()).describe('attachment ids (from attachments[].id of mail +message)'),
+    filenames: z
+      .record(z.string())
+      .optional()
+      .describe('optional {attachmentId: filename} from attachments[].filename; without it the name is guessed from headers and may lose its extension'),
+    user_mailbox_id: z.string().optional().describe('mailbox address, defaults to me (current user)'),
+  },
+  async ({ message_id, attachment_ids, filenames, user_mailbox_id }) => {
+    const names = filenames ?? {};
+    try {
+      const mailbox = user_mailbox_id || 'me';
+      // 1) Mint download links via lark-cli (user identity)
+      const args = [
+        'mail', 'user_mailbox.message.attachments', 'download_url',
+        '--user-mailbox-id', mailbox,
+        '--message-id', message_id,
+        '--format', 'json',
+      ];
+      for (const id of attachment_ids) args.push('--attachment-ids', id);
+      const rr = spawnSync('lark-cli', args, { encoding: 'utf8', env: process.env, timeout: 60_000 });
+      if (rr.error) throw new Error(`failed to invoke lark-cli: ${rr.error.message}`);
+      if (rr.status !== 0) throw new Error(`lark-cli exited ${rr.status}: ${String(rr.stderr || rr.stdout).slice(0, 300)}`);
+
+      let payload;
+      try {
+        payload = JSON.parse(rr.stdout);
+      } catch {
+        throw new Error(`could not parse lark-cli output: ${String(rr.stdout).slice(0, 200)}`);
+      }
+      if (payload?.ok === false) {
+        throw new Error(`lark-cli returned an error: ${JSON.stringify(payload.error ?? payload).slice(0, 300)}`);
+      }
+      const list =
+        payload?.data?.download_urls ?? payload?.download_urls ?? payload?.data?.items ?? [];
+      if (!Array.isArray(list) || !list.length) {
+        throw new Error(`no download link returned (payload: ${JSON.stringify(payload).slice(0, 300)}）`);
+      }
+
+      // 2) Download each into the workspace under incoming/mail-<message_id>/
+      const destDir = path.join(WORKSPACE, 'incoming', `mail-${message_id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60)}`);
+      fs.mkdirSync(destDir, { recursive: true });
+      const saved = [];
+      for (const it of list) {
+        const url = it?.download_url ?? it?.url;
+        if (!url) continue;
+        const res = await fetch(url);
+        if (!res.ok) {
+          saved.push({ attachment_id: it?.attachment_id, error: `download failed with HTTP ${res.status}` });
+          continue;
+        }
+        // The filename is not in the download_url response — it lives in attachments[].filename of the mail detail.
+        // Callers have usually read that already, so prefer the names passed in;
+        // then decode Content-Disposition (Lark returns the original name UTF-8 encoded);
+        // and only fall back to attachment_id, which loses the extension and leaves Read unable to type the file.
+        const fromCaller = names?.[it?.attachment_id];
+        const cd = res.headers.get('content-disposition') ?? '';
+        const star = cd.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+        const plain = cd.match(/filename="?([^";]+)"?/i)?.[1];
+        const fromHeader = star ? decodeURIComponent(star) : plain ? decodeURIComponent(plain) : null;
+        const rawName = fromCaller || fromHeader || `${it?.attachment_id ?? `attachment-${saved.length + 1}`}.bin`;
+        const name = String(rawName).replace(/[\/\\:*?"<>|\r\n]/g, '_').slice(0, 120);
+        const buf = Buffer.from(await res.arrayBuffer());
+        const dest = path.join(destDir, name);
+        fs.writeFileSync(dest, buf);
+        saved.push({ name, path: `./${path.relative(WORKSPACE, dest)}`, bytes: buf.length });
+      }
+      if (!saved.length) throw new Error('no downloadable item among the returned links');
+      return ok({
+        saved,
+        hint: 'Use the Read tool on the path above to view the content (PDF and images read directly).',
+      });
     } catch (e) {
       return fail(e);
     }

@@ -261,7 +261,7 @@ async function handleMessage(data) {
   const myWorkspace = workspaceFor(isOwner);
   let built;
   try {
-    built = await buildPrompt(client, message, myWorkspace);
+    built = await buildPrompt(client, message, myWorkspace, senderOpenId);
   } catch (e) {
     console.error('[buildPrompt]', e);
     // Do not blame every failure on permissions: the SDK's AxiosError often has an empty

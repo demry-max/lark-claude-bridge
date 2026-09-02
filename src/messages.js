@@ -37,8 +37,8 @@ async function feishuAsr(client, audioPath) {
   return String(res?.recognition_text ?? res?.data?.recognition_text ?? '').trim();
 }
 
-// Transient network faults: downloading an attachment is idempotent, so a blip should retry
-// itself rather than surfacing EHOSTUNREACH to the user as a bare 'failed to process'
+// 瞬时网络故障：附件下载是幂等的，抖一下就该自己重试，
+// 而不是把「EHOSTUNREACH」变成用户面前的一句「处理失败」
 const TRANSIENT = /EHOSTUNREACH|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|timeout/i;
 export function isTransientNetworkError(e) {
   const code = e?.code ?? e?.errno ?? '';
@@ -48,7 +48,7 @@ export function isTransientNetworkError(e) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Retry network failures (2 by default, 1s/3s backoff); anything else throws immediately */
+/** 网络类失败重试（默认 2 次，退避 1s/3s）；非网络错误立即抛出，不做无谓重试 */
 async function withRetry(label, fn, attempts = 2) {
   for (let i = 0; ; i++) {
     try {
@@ -56,14 +56,14 @@ async function withRetry(label, fn, attempts = 2) {
     } catch (e) {
       if (i >= attempts || !isTransientNetworkError(e)) throw e;
       const wait = [1000, 3000][i] ?? 3000;
-      console.log(`[${label}] network failure (${e?.code ?? e?.message}），${wait / 1000}s before retry (${i + 1}/${attempts}）`);
+      console.log(`[${label}] 网络失败（${e?.code ?? e?.message}），${wait / 1000}s 后重试（${i + 1}/${attempts}）`);
       await sleep(wait);
     }
   }
 }
 
 /**
- * Turn an error into something a person can read and act on.
+ * 从错误里提取「人能看懂且能据此行动」的描述。
  * 飞书 SDK 的 AxiosError 常常 message 为空，直接 ?? 出来是一片空白——
  * 用户看到的就是「处理该消息失败：」后面什么都没有。
  */
@@ -77,18 +77,18 @@ export function describeError(e) {
   if (isTransientNetworkError(e)) {
     return {
       kind: 'network',
-      text: `Network temporarily unreachable (${code || msg || '连接失败'}）`,
-      hint: 'This is usually temporary — please send it again.',
+      text: `网络暂时不可达（${code || msg || '连接失败'}）`,
+      hint: '这通常是临时的，请重发一次。',
     };
   }
   if (apiCode || status === 403 || status === 401) {
     return {
       kind: 'permission',
-      text: `The Lark API returned an error${apiCode ? ` ${apiCode}` : ''}${apiMsg ? `：${apiMsg}` : status ? `（HTTP ${status}）` : ''}`,
-      hint: 'For images/files, confirm the app has the im:resource scope and a published version.',
+      text: `飞书接口返回错误${apiCode ? ` ${apiCode}` : ''}${apiMsg ? `：${apiMsg}` : status ? `（HTTP ${status}）` : ''}`,
+      hint: '若是图片/文件，请确认应用已开通 im:resource 权限并发布版本。',
     };
   }
-  return { kind: 'unknown', text: msg || code || String(e).slice(0, 200) || 'unknown error', hint: '' };
+  return { kind: 'unknown', text: msg || code || String(e).slice(0, 200) || '未知错误', hint: '' };
 }
 
 function safeParse(json) {
@@ -191,7 +191,65 @@ function walkPost(content) {
  * 把一条飞书消息转成给 Claude 的提示词。
  * 返回 { prompt, attachments }；attachments 非空时需要给 Claude 开 Read(./incoming/**) 权限。
  */
-export async function buildPrompt(client, message, workspaceDir) {
+/**
+ * Fetch the quoted (replied-to) message and pass it along as context.
+ *
+ * Lark's reply feature keeps the quoted content on a separate message referenced by parent_id;
+ * the event carries only the id. Without this, a user quoting a document and saying "read this"
+ * leaves the bot seeing just "read this", so it answers "you didn't send a link" — while the user believes they did.
+ *
+ * Only one level up: quote chains can be long, and going deeper wastes tokens and drags in noise.
+ */
+async function fetchQuoted(client, message, workspaceDir, senderOpenId) {
+  const parentId = message.parent_id;
+  if (!parentId) return null;
+  try {
+    const res = await withRetry('quote', () =>
+      client.im.v1.message.get({ path: { message_id: parentId } })
+    );
+    const item = (res?.data?.items ?? [])[0];
+    if (!item) return null;
+    // message.get returns a different shape than the event message (body.content / msg_type); normalize then reuse the parser
+    const pseudo = {
+      message_id: item.message_id ?? parentId,
+      message_type: item.msg_type,
+      content: item.body?.content ?? '{}',
+      parent_id: undefined, // one level only, so we never walk the quote chain indefinitely
+    };
+    const built = await buildPrompt(client, pseudo, workspaceDir);
+    if (!built?.prompt && !built?.attachments?.length) return null;
+    const quotedSender = item.sender?.id ?? item.sender_id?.open_id ?? null;
+    // Quoting yourself = material the user supplied; quoting someone else = third-party content, needs fencing
+    const isSelf = quotedSender && senderOpenId && quotedSender === senderOpenId;
+    return {
+      isSelf,
+      text: built.prompt ?? '',
+      attachments: built.attachments ?? [],
+      type: item.msg_type,
+    };
+  } catch (e) {
+    console.error('[quote] failed to fetch the quoted message:', e?.message ?? e?.code ?? e);
+    return null; // if it cannot be fetched, treat it as unquoted and handle the message normally
+  }
+}
+
+export async function buildPrompt(client, message, workspaceDir, senderOpenId = null) {
+  const quoted = await fetchQuoted(client, message, workspaceDir, senderOpenId);
+  const withQuote = (built) => {
+    if (!quoted) return built;
+    const head = quoted.isSelf
+      ? '(The user is replying to a message they sent earlier. Its content follows — this is the material they want you to work with.)'
+      : '(The user quoted a message sent by someone else. Its content follows.)';
+    const body = quoted.isSelf
+      ? quoted.text
+      : fenceUntrusted('quoted message from another person', quoted.text);
+    return {
+      ...built,
+      prompt: `${head}\n${body}\n\n(That was the quoted content. What the user said this time follows.)\n${built.prompt ?? ''}`,
+      attachments: [...(quoted.attachments ?? []), ...(built.attachments ?? [])],
+    };
+  };
+
   const type = message.message_type;
   const content = safeParse(message.content);
   const incomingDir = path.join(workspaceDir, 'incoming', message.message_id);
@@ -199,16 +257,16 @@ export async function buildPrompt(client, message, workspaceDir) {
 
   switch (type) {
     case 'text':
-      return { prompt: stripMentions(content.text), attachments: [] };
+      return withQuote({ prompt: stripMentions(content.text), attachments: [] });
 
     case 'image': {
       const p = await download(
         client, message.message_id, content.image_key, 'image', incomingDir, `${content.image_key}.png`
       );
-      return {
+      return withQuote({
         prompt: `用户发来一张图片，已保存为 ${rel(p)}。请用 Read 工具查看图片内容，然后回应用户。`,
         attachments: [p],
-      };
+      });
     }
 
     case 'file': {
@@ -218,13 +276,13 @@ export async function buildPrompt(client, message, workspaceDir) {
       const p = await download(
         client, message.message_id, content.file_key, 'file', incomingDir, name
       );
-      return {
+      return withQuote({
         prompt: `用户发来一个文件，已保存为 ${rel(p)}。\n\n${fenceUntrusted(
           '发送方提供的文件名',
           shownName
         )}\n\n请用 Read 工具查看文件内容，然后回应用户。`,
         attachments: [p],
-      };
+      });
     }
 
     case 'post': {
@@ -246,7 +304,7 @@ export async function buildPrompt(client, message, workspaceDir) {
           .map(rel)
           .join('、')}。请用 Read 工具查看后一并回应。）`;
       }
-      return { prompt, attachments };
+      return withQuote({ prompt, attachments });
     }
 
     case 'merge_forward': {
@@ -263,10 +321,10 @@ export async function buildPrompt(client, message, workspaceDir) {
         else if (item.msg_type === 'post') lines.push(walkPost(body).text);
         else lines.push(`[${item.msg_type} 消息]`);
       }
-      return {
+      return withQuote({
         prompt: `用户转发了一组聊天记录。\n\n${fenceUntrusted('飞书转发的聊天记录', lines.join('\n'))}\n\n请理解上述记录后回应用户。`,
         attachments: [],
-      };
+      });
     }
 
     case 'audio': {
@@ -303,12 +361,12 @@ export async function buildPrompt(client, message, workspaceDir) {
 
     default:
       // 分享卡片/邮件卡片等：把原始 JSON 交给 Claude 理解
-      return {
+      return withQuote({
         prompt: `用户发来一条「${type}」类型的飞书消息。\n\n${fenceUntrusted(
           `飞书 ${type} 消息的原始 JSON`,
           String(message.content).slice(0, 6000)
         )}\n\n请从中提取有用信息，理解后回应用户。`,
         attachments: [],
-      };
+      });
   }
 }

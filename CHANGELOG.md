@@ -2,6 +2,32 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-09-02
+
+### Added
+
+- **The quoted message is now actually read.** Lark's reply feature keeps the quoted content on a
+  separate message (`parent_id`) and the event carries only its id — which was never fetched. So
+  quoting a document and saying "read this one too" left the bot seeing just "read this too", and it
+  would answer "you didn't send me a link". It now fetches the quoted message (including any image
+  or file in it) and treats it by origin: quoting yourself is material you supplied, quoting someone
+  else goes through the untrusted-content fence. If the fetch fails it degrades to handling the
+  message normally rather than failing the whole turn.
+- **Mail attachments are readable** (`mcp__feishu__mail_attachment_download`). This was a broken
+  chain: `lark-cli` can list attachment metadata and mint a download link, but the bot has no curl
+  and no general Bash to fetch it, and WebFetch only turns pages into text, which is useless for
+  PDF/docx. The result was permanently "sees the filename, never the content". The new tool closes
+  the gap — get link, download into the workspace — and the model simply Reads the file. The
+  filename resolves through three fallbacks (caller-supplied, Content-Disposition, attachment id) so
+  it never loses the extension and leave Read unable to type the file.
+
+### Notes
+
+Quoted-message support is a Lark/Feishu feature; DingTalk and WeCom use different message
+mechanics and were deliberately left alone rather than given unverified ports. The mail attachment
+tool requires a logged-in `lark-cli` (user identity — mail lives in a personal mailbox that the
+app's tenant credentials cannot read).
+
 ## [2.1.1] - 2026-09-02
 
 ### Fixed
