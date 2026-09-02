@@ -2,7 +2,7 @@ import 'dotenv/config';
 import * as lark from '@larksuiteoapi/node-sdk';
 import fs from 'node:fs';
 import path from 'node:path';
-import { runClaude, resetSession, abortRetries, sessionKeysWithPrefix, runningKeysWithPrefix, sessionInfo, WORKSPACE_DIR, GUEST_WORKSPACE_DIR, workspaceFor, outboxDirFor, cancelRun, isRunning, getRuntimeConfig, setRuntimeConfig, MODEL_ALIASES, EFFORT_LEVELS, consumeMemoryNudge, shouldRecycleSession } from './claude.js';
+import { runClaude, checkCliEnvironment, resetSession, abortRetries, sessionKeysWithPrefix, runningKeysWithPrefix, sessionInfo, WORKSPACE_DIR, GUEST_WORKSPACE_DIR, workspaceFor, outboxDirFor, cancelRun, isRunning, getRuntimeConfig, setRuntimeConfig, MODEL_ALIASES, EFFORT_LEVELS, consumeMemoryNudge, shouldRecycleSession } from './claude.js';
 import { buildPrompt, cleanIncoming } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
 import { startScheduler } from './scheduler.js';
@@ -699,6 +699,9 @@ announceStartup();
       } catch { return false; }
     });
   console.log(`[config] effective: model=${cfg.model || 'CLI default'} effort=${cfg.effort || 'CLI default'}`);
+  const cli = checkCliEnvironment(cfg.model);
+  console.log(`[config] claude CLI: ${cli.bin} (${cli.version ?? 'unknown'})`);
+  if (cli.problem) console.error(`[config] WARNING: ${cli.problem}`);
   if (shadowed.length) {
     console.error(`[config] WARNING: shadowed by the shell environment, .env values ignored: ${shadowed.join(', ')}`);
   }

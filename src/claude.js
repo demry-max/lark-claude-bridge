@@ -90,7 +90,7 @@ const NON_OWNER_TOOLS = process.env.NON_OWNER_TOOLS ?? 'WebSearch';
 // （实测 http://127.0.0.1:3000 会真的发起连接，错误信息即泄露端口可达性），
 // 也可把数据编码进 URL 外传。需要访客能读网页时用 GUEST_TOOLS 显式打开。
 const GUEST_TOOLS = process.env.GUEST_TOOLS ?? 'WebSearch';
-// Never available to guests regardless of env: env may add other tools, never unlock these
+// 无论 env 怎么配，这些工具对访客永远不可用（env 只能在白名单里加别的，不能解开这些）
 const GUEST_HARD_DENY = [
   'Bash', 'BashOutput', 'KillShell', 'Edit', 'Write', 'NotebookEdit', 'Task', 'Agent', 'Skill',
   'SendMessage', 'Artifact', 'CronCreate', 'CronDelete', 'CronList', 'Workflow', 'ListAgents',
@@ -119,10 +119,10 @@ let CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 // 思考深度：low/medium/high/xhigh/max，留空=CLI 默认
 let CLAUDE_EFFORT = process.env.CLAUDE_EFFORT || '';
 
-// Model short names → full ids (full ids also accepted)
-// Note: `fable` points at 5.1, which needs Claude Code CLI >= 2.1.251.
-// Older CLIs report "does not support this model" — run `claude update`,
-// or use `fable5` to stay on the previous generation.
+// 模型短名 → 全名（也允许直接写全名）
+// 注意：fable 默认指向 5.1，需要 Claude Code CLI ≥ 2.1.251；
+// 旧版 CLI 会报 does not support this model，跑 `claude update` 升级，
+// 或用 `fable5` 指回上一代。
 export const MODEL_ALIASES = {
   fable: 'claude-fable-5-1',
   'fable5': 'claude-fable-5',
@@ -151,6 +151,61 @@ export function normalizeEffort(v) {
     return null;
   }
   return e;
+}
+
+// Minimum CLI version per model. Declared here rather than discovered by trial, because
+// the failure surfaces when a USER sends a message, not at startup: the bridge looks fine
+const MODEL_MIN_CLI = [
+  { re: /^claude-fable-5-1/, min: '2.1.251' },
+];
+
+const cmpVer = (a, b) => {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
+  }
+  return 0;
+};
+
+/**
+ * 启动自检：确认桥接实际会调用的那个 claude 可用、版本够跑当前模型。
+ *
+ * 关键在于「实际会调用的那个」——本机可能装了多份 claude（nvm 一份、homebrew 一份），
+ * 而子进程按 PATH 顺序解析。2026-09-02 就踩过：升级了 shell 里那份，
+ * 而 launchd 的 PATH 把另一份排在前面，模型切换后每条消息都报 400。
+ * 返回 { bin, version, ok, problem }，由调用方决定怎么告警。
+ */
+export function checkCliEnvironment(model = CLAUDE_MODEL) {
+  const res = { bin: CLAUDE_BIN, version: null, ok: false, problem: null };
+  try {
+    const out = spawn.sync(CLAUDE_BIN, ['--version'], { encoding: 'utf8', env: process.env });
+    if (out.error) {
+      res.problem = `claude executable not found (PATH=${process.env.PATH}）：${out.error.message}`;
+      return res;
+    }
+    // Record the resolved path so multi-install setups show which copy is in play
+    const which = spawn.sync(process.platform === 'win32' ? 'where' : 'which',
+      [CLAUDE_BIN], { encoding: 'utf8', env: process.env });
+    if (which.stdout) res.bin = which.stdout.trim().split('\n')[0];
+    res.version = (String(out.stdout ?? '').match(/(\d+\.\d+\.\d+)/) ?? [])[1] ?? null;
+    if (!res.version) {
+      res.problem = `Could not parse the claude version: ${String(out.stdout ?? out.stderr ?? '').slice(0, 120)}`;
+      return res;
+    }
+    const need = MODEL_MIN_CLI.find((m) => m.re.test(model ?? ''));
+    if (need && cmpVer(res.version, need.min) < 0) {
+      res.problem =
+        `Model ${model} requires Claude Code >= ${need.min}，but ${res.bin} is ${res.version}. ` +
+        `Upgrade the claude at that path (several installs may exist; the first on PATH wins), or pick another model.`;
+      return res;
+    }
+    res.ok = true;
+    return res;
+  } catch (e) {
+    res.problem = `CLI self-check failed: ${e?.message ?? e}`;
+    return res;
+  }
 }
 
 export function getRuntimeConfig() {
@@ -299,6 +354,10 @@ export function sessionInfo(chatId, isOwner = false) {
     `- 工作目录: \`${workspaceFor(isOwner)}\``,
     `- 你的身份: ${isOwner ? 'owner' : '普通成员'}`,
     `- 模型: ${CLAUDE_MODEL || '（CLI 默认）'}`,
+    (() => {
+      const cli = checkCliEnvironment();
+      return `- CLI: ${cli.version ?? '未知'} @ ${cli.bin}${cli.problem ? ' ⚠️ ' + cli.problem : ''}`;
+    })(),
     `- 思考深度: ${CLAUDE_EFFORT || '（CLI 默认）'}`,
     `- 上下文: ${(contextSize.get(chatId) ?? 0).toLocaleString()} tokens${CONTEXT_NUDGE_TOKENS > 0 ? ` / 固化提醒阈值 ${CONTEXT_NUDGE_TOKENS.toLocaleString()}` : ''}`,
     `- 允许工具: ${tools || '（无）'}`,
@@ -322,8 +381,8 @@ function syncSkills() {
 // 定时任务与聊天是并发的两个 claude 进程、共享同一工作区，写文件必然互相覆盖，
 // 模型会读到别人的 chat_id（进而把排期发错会话）。逐次注入天然无竞态。
 function runtimeSystemPrompt(chatId, model, effort, isOwner) {
-  // A guest only needs to know which model it runs on. outbox, scheduling and chat_id are
-  // owner-side concepts — telling a guest about them only invites it to attempt what it lacks
+  // 访客只需要知道自己跑在什么模型上；outbox、定时任务、chat_id 都是 owner 侧的概念，
+  // 讲给访客听既没用又会诱导它去尝试没有的能力
   if (!isOwner) {
     return [
       '# 当前运行配置（由桥接注入，权威来源）',
@@ -398,13 +457,13 @@ export function buildClaudeArgs(chatId, isOwner = false, extraTools = [], opts =
     // 白名单：只有这些内置工具存在于访客的工具集里。
     // 访客发了图片/文件时才追加 Read，且路径由 allowedTools 的 Read(./incoming/**) 限定。
     const needsRead = extraTools.some((e) => e.startsWith('Read('));
-    // Hard floor beats env: a mis-set or widened GUEST_TOOLS cannot unlock these
+    // 硬下限压过 env：GUEST_TOOLS 配错或被人放宽也解不开这些
     const allowTools = GUEST_TOOLS.split(',')
       .map((s) => s.trim())
       .filter((x) => x && !GUEST_HARD_DENY.includes(x));
     if (needsRead && !allowTools.includes('Read')) allowTools.push('Read');
     args.push('--tools', allowTools.join(','));
-    // Defence in depth: deny the dangerous ones explicitly too (hard floor merged, deduped)
+    // 双保险：白名单之外再显式拒绝一遍高危工具（硬下限并入，去重）
     const denied = [...new Set([
       ...GUEST_HARD_DENY,
       ...GUEST_DENIED_TOOLS.split(',').map((s) => s.trim()).filter(Boolean),

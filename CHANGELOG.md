@@ -2,6 +2,25 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-09-02
+
+### Added
+
+- **CLI self-check at startup**: logs the path and version of the claude executable the bridge will
+  **actually invoke**, and warns when that version cannot run the configured model (in the log and
+  in the startup notice sent to the owner).
+- **Pre-flight check on `/model`**: switching is refused with an explanation when the local CLI
+  cannot run the target model, instead of succeeding and then failing on every message.
+- **`/status` shows the CLI path and version.**
+
+### Background
+
+A machine may hold several claude installs (one from nvm, one from homebrew), and the child process
+resolves by **PATH order**. Upgrading the copy in your terminal while the supervisor's PATH points at
+another one makes every message return `400 does not support this model` after a model switch — the
+bridge itself looks healthy, and the problem only surfaces when a user sends something. The check
+moves this to startup and names the exact path and version in play.
+
 ## [2.0.4] - 2026-09-02
 
 ### Added
