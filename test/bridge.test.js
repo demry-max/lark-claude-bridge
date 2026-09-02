@@ -440,3 +440,44 @@ exit 1
     assert.match(r.problem, /找不到可执行的 claude|PATH/);
   });
 });
+
+describe('附件失败的错误呈现（行为断言）', () => {
+  // 2026-09-02：发 .docx 收到「处理该消息失败：」后面一片空白 + 一句误导性的权限建议。
+  // 真因是 EHOSTUNREACH（瞬时网络），而飞书 SDK 的 AxiosError message 为空。
+  test('网络错误说成网络问题，并提示重发', async () => {
+    const { describeError } = await import('../src/messages.js');
+    const d = describeError(Object.assign(new Error(''), { code: 'EHOSTUNREACH', isAxiosError: true }));
+    assert.equal(d.kind, 'network');
+    assert.match(d.text, /EHOSTUNREACH/i, '要点出真实的错误码');
+    // 各仓库文案语言不同，只要求「给出可行动的建议」而非匹配具体措辞
+    assert.ok(d.hint.trim().length > 0, '网络错误必须告诉用户可以重发');
+    assert.ok(!/im:resource/.test(d.hint), '网络问题不该建议用户去查权限');
+  });
+
+  test('权限错误才给权限建议，且带上飞书返回码', async () => {
+    const { describeError } = await import('../src/messages.js');
+    const d = describeError(Object.assign(new Error(''), {
+      response: { status: 403, data: { code: 99991672, msg: 'no permission' } },
+    }));
+    assert.equal(d.kind, 'permission');
+    assert.match(d.text, /99991672/);
+    assert.match(d.hint, /im:resource/);
+  });
+
+  test('message 为空时也不能渲染成空白', async () => {
+    const { describeError } = await import('../src/messages.js');
+    for (const e of [new Error(''), { code: 'EHOSTUNREACH' }, {}]) {
+      const d = describeError(e);
+      assert.ok(d.text && d.text.trim().length > 0, '任何错误都必须有可读描述');
+    }
+  });
+
+  test('瞬时网络错误可识别，业务错误不误判', async () => {
+    const { isTransientNetworkError } = await import('../src/messages.js');
+    assert.ok(isTransientNetworkError({ code: 'EHOSTUNREACH' }));
+    assert.ok(isTransientNetworkError({ code: 'ETIMEDOUT' }));
+    assert.ok(isTransientNetworkError(new Error('socket hang up')));
+    assert.ok(!isTransientNetworkError(new Error('no permission')));
+    assert.ok(!isTransientNetworkError({ response: { status: 403 } }));
+  });
+});

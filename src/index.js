@@ -3,7 +3,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runClaude, checkCliEnvironment, resetSession, abortRetries, sessionKeysWithPrefix, runningKeysWithPrefix, sessionInfo, WORKSPACE_DIR, GUEST_WORKSPACE_DIR, workspaceFor, outboxDirFor, cancelRun, isRunning, getRuntimeConfig, setRuntimeConfig, MODEL_ALIASES, EFFORT_LEVELS, consumeMemoryNudge, shouldRecycleSession } from './claude.js';
-import { buildPrompt, cleanIncoming } from './messages.js';
+import { buildPrompt, cleanIncoming, describeError } from './messages.js';
 import { loadOwner, saveOwner } from './store.js';
 import { startScheduler } from './scheduler.js';
 import { CronExpressionParser } from 'cron-parser';
@@ -264,9 +264,12 @@ async function handleMessage(data) {
     built = await buildPrompt(client, message, myWorkspace);
   } catch (e) {
     console.error('[buildPrompt]', e);
+    // Do not blame every failure on permissions: the SDK's AxiosError often has an empty
+    // message, so the old text rendered as blank space plus a misleading permissions hint
+    const d = describeError(e);
     await reply(
       message.message_id,
-      `⚠️ Could not process that message: ${e?.message ?? e}\n(For images and files, make sure the app has the im:resource scope and a published version.)`
+      `⚠️ Could not process this message: ${d.text}${d.hint ? `\n${d.hint}` : ''}`
     );
     return;
   }

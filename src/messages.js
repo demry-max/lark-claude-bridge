@@ -37,6 +37,60 @@ async function feishuAsr(client, audioPath) {
   return String(res?.recognition_text ?? res?.data?.recognition_text ?? '').trim();
 }
 
+// Transient network faults: downloading an attachment is idempotent, so a blip should retry
+// itself rather than surfacing EHOSTUNREACH to the user as a bare 'failed to process'
+const TRANSIENT = /EHOSTUNREACH|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|timeout/i;
+export function isTransientNetworkError(e) {
+  const code = e?.code ?? e?.errno ?? '';
+  const msg = String(e?.message ?? '');
+  return TRANSIENT.test(String(code)) || TRANSIENT.test(msg);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Retry network failures (2 by default, 1s/3s backoff); anything else throws immediately */
+async function withRetry(label, fn, attempts = 2) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= attempts || !isTransientNetworkError(e)) throw e;
+      const wait = [1000, 3000][i] ?? 3000;
+      console.log(`[${label}] network failure (${e?.code ?? e?.message}），${wait / 1000}s before retry (${i + 1}/${attempts}）`);
+      await sleep(wait);
+    }
+  }
+}
+
+/**
+ * Turn an error into something a person can read and act on.
+ * 飞书 SDK 的 AxiosError 常常 message 为空，直接 ?? 出来是一片空白——
+ * 用户看到的就是「处理该消息失败：」后面什么都没有。
+ */
+export function describeError(e) {
+  const code = e?.code ?? e?.errno;
+  const apiCode = e?.response?.data?.code ?? e?.response?.data?.error?.code;
+  const apiMsg = e?.response?.data?.msg ?? e?.response?.data?.error?.message;
+  const status = e?.response?.status;
+  const msg = String(e?.message ?? '').trim();
+
+  if (isTransientNetworkError(e)) {
+    return {
+      kind: 'network',
+      text: `Network temporarily unreachable (${code || msg || '连接失败'}）`,
+      hint: 'This is usually temporary — please send it again.',
+    };
+  }
+  if (apiCode || status === 403 || status === 401) {
+    return {
+      kind: 'permission',
+      text: `The Lark API returned an error${apiCode ? ` ${apiCode}` : ''}${apiMsg ? `：${apiMsg}` : status ? `（HTTP ${status}）` : ''}`,
+      hint: 'For images/files, confirm the app has the im:resource scope and a published version.',
+    };
+  }
+  return { kind: 'unknown', text: msg || code || String(e).slice(0, 200) || 'unknown error', hint: '' };
+}
+
 function safeParse(json) {
   try {
     return JSON.parse(json);
@@ -105,12 +159,14 @@ function stripMentions(text) {
 async function download(client, messageId, fileKey, type, incomingDir, fileName) {
   fs.mkdirSync(incomingDir, { recursive: true });
   const dest = path.join(incomingDir, path.basename(fileName));
-  const res = await client.im.v1.messageResource.get({
-    path: { message_id: messageId, file_key: fileKey },
-    params: { type },
+  return withRetry('download', async () => {
+    const res = await client.im.v1.messageResource.get({
+      path: { message_id: messageId, file_key: fileKey },
+      params: { type },
+    });
+    await res.writeFile(dest);
+    return dest;
   });
-  await res.writeFile(dest);
-  return dest;
 }
 
 // 从 post 富文本节点树提取文字与图片 key
@@ -195,7 +251,9 @@ export async function buildPrompt(client, message, workspaceDir) {
 
     case 'merge_forward': {
       // 合并转发：拉取子消息逐条拼接
-      const res = await client.im.v1.message.get({ path: { message_id: message.message_id } });
+      const res = await withRetry('merge_forward', () =>
+        client.im.v1.message.get({ path: { message_id: message.message_id } })
+      );
       const items = res?.data?.items ?? [];
       const lines = [];
       for (const item of items) {

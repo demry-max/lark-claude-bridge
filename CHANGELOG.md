@@ -2,6 +2,19 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] - 2026-09-02
+
+### Fixed
+
+- **Attachment downloads now retry transient network failures** (twice, 1s/3s backoff). A blip such
+  as `EHOSTUNREACH` previously surfaced as a flat "failed to process", when simply resending worked.
+- **Error messages no longer blame everything on permissions.** Whatever the real cause, the old text
+  appended "confirm the im:resource scope is enabled" — and since the platform SDK's AxiosError often
+  has an empty `message`, users saw "Could not process this message:" followed by blank space plus a
+  misleading hint. Failures are now classified: network problems say so and suggest resending,
+  permission problems get the permissions hint along with the API error code, and everything else
+  still yields a readable description.
+
 ## [2.1.0] - 2026-09-02
 
 ### Added
